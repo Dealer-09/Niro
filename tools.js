@@ -44,6 +44,7 @@ const activeTimers = new Map();
 // Store reference — set from main.js
 let store = null;
 let mainWindow = null;
+let appPath = process.cwd(); // fallback; overridden by setAppPath() from main.js
 
 export function setStore(s) {
   store = s;
@@ -51,6 +52,14 @@ export function setStore(s) {
 
 export function setMainWindow(win) {
   mainWindow = win;
+}
+
+export function setAppPath(p) {
+  appPath = p;
+}
+
+function getIconPath() {
+  return path.join(appPath, 'assets', 'icon.png');
 }
 
 // ─────────────────────────────────────────────────
@@ -237,7 +246,7 @@ async function set_timer({ minutes, label }) {
       const notif = new Notification({
         title: '⏱ Timer Complete!',
         body: label || `Your ${minutes} minute timer is done!`,
-        icon: path.join(process.cwd(), 'assets', 'icon.png'),
+        icon: getIconPath(),
       });
       notif.show();
       activeTimers.delete(id);
@@ -280,7 +289,7 @@ async function show_notification({ title, message }) {
     const notif = new Notification({
       title: title,
       body: message,
-      icon: path.join(process.cwd(), 'assets', 'icon.png'),
+      icon: getIconPath(),
     });
     notif.show();
     return { success: true, result: `Notification shown: "${title}"` };
@@ -547,5 +556,3 @@ export async function executeTool(name, args) {
   console.log(`[Niro] Executing tool: ${name}`, args);
   return await fn(args);
 }
-
-export { activeTimers };

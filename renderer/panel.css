@@ -218,7 +218,7 @@ html, body {
   font-weight: 400;
 }
 
-#add-btn, #mic-btn {
+#mic-btn {
   width: 36px;
   height: 36px;
   border: none;
@@ -234,7 +234,7 @@ html, body {
   flex-shrink: 0;
 }
 
-#add-btn:hover, #mic-btn:hover {
+#mic-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -422,37 +422,16 @@ html, body {
 }
 
 /* ─────────────────────────────────────────────── */
-/* DIVIDER                                          */
+/* UTILITIES                                        */
 /* ─────────────────────────────────────────────── */
-.divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 16px;
-  flex-shrink: 0;
+.hidden {
+  display: none !important;
 }
-
-.divider-line {
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-
-.divider-text {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-/* ─────────────────────────────────────────────── */
-/* TASK GRID                                        */
 /* ─────────────────────────────────────────────── */
 #task-area {
-  padding: 8px 12px 14px;
+  padding: 4px 12px 10px;
   flex-shrink: 0;
-  max-height: 180px;
+  max-height: 160px;
   overflow-y: auto;
 }
 
@@ -864,49 +843,6 @@ html, body {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
   color: var(--accent-light);
-}
-
-/* ─────────────────────────────────────────────── */
-/* LOCAL STATUS PROGRESS BAR                        */
-/* ─────────────────────────────────────────────── */
-#local-status-container {
-  margin: 12px 0;
-  padding: 12px;
-  background: rgba(139, 92, 246, 0.05);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.local-status-header {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 11px;
-}
-
-#local-status-msg {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-#local-status-pct {
-  color: var(--accent-light);
-  font-weight: 600;
-}
-
-.progress-bar-bg {
-  height: 6px;
-  background: var(--bg-tertiary);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-light));
-  border-radius: 3px;
-  transition: width 0.3s ease;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.4);
 }
 
 /* ─────────────────────────────────────────────── */

@@ -1,365 +1,349 @@
+// agent.js — Niro AI orchestration: Groq + Gemini, user-supplied API keys only
 import { GoogleGenAI } from '@google/genai';
 import { executeTool } from './tools.js';
-import { runLocalInference, getModelStatus } from './local-llm.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-// The Groq SDK is just an OpenAI-compatible client.
-// We can point it at any OpenAI-compatible endpoint (Ollama, LiteLLM, etc.)
+// ─── State ────────────────────────────────────────────────────────────────────
 let llmClient = null;
-let currentProvider = 'gemini';
-let currentModel = 'gemini-2.5-flash';
+let currentProvider = 'groq'; // default: groq
+let currentModel = null;
 let abortFlag = false;
 
-const GEMINI_CLOUD_MODEL = 'gemini-2.5-flash';
+// ─── Model defaults ───────────────────────────────────────────────────────────
+const PROVIDER_DEFAULTS = {
+  groq:   { model: 'llama-3.1-8b-instant', baseURL: 'https://api.groq.com/openai/v1' },
+  gemini: { model: 'gemini-2.5-flash-lite' }, // fastest, best free tier throughput, strong tool calling
+};
 
-const SYSTEM_PROMPT = `You are Niro, a powerful AI assistant for Windows. Your goal is to help users by executing tasks on their computer using real APIs and direct automation — NEVER screenshot-based coordinate clicking.
+// ─── System Prompt ────────────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are Niro, a Windows desktop AI assistant. Execute tasks using the provided tools.
 
-**Core Execution Rules:**
+Rules:
+- Always use tools to complete tasks, never just describe what to do
+- For opening apps use open_app. For websites use open_website
+- For system info use run_command with PowerShell
+- For timers use set_timer
+- Be concise in responses
 
-1.  **Use Real APIs, Not Screenshots**: Execute actions through proper APIs, shell commands, and direct app interaction. NEVER rely on taking a screenshot to find coordinates and then clicking on them. Instead:
-    *   Use \`run_task\` for any web browsing task — it connects to your real Chrome with all your logins and cookies intact
-    *   Open apps via \`open_app\` (launches by name or path)
-    *   Manage windows via \`focus_window\`, \`list_windows\`, \`close_app\`
-    *   Run system tasks via \`run_command\` (PowerShell)
-    *   Use \`type_text\` and \`press_key\` for keyboard-driven input in desktop apps
+You are on Windows. PowerShell is available via run_command.`;
 
-2.  **Deconstruct Tasks**: Break down every user request into a sequence of smaller, atomic tool calls. Execute the *entire* sequence to fulfill the user's intent.
-    *   "Search for cats on YouTube" -> \`run_task('Go to YouTube and search for cats')\`
-    *   "Set a 25 min timer and open my email" -> \`set_timer(25, 'Focus timer')\` -> \`run_task('Open Gmail')\`
-    *   "Open VS Code" -> \`open_app('vscode')\`
-    *   "Close Notepad" -> \`close_app('notepad')\`
-
-3.  **AI Browser Automation with Browser Use**: When interacting with websites, use \`run_task\` — it uses an AI agent that connects to your real Chrome browser:
-    *   \`run_task\` — Send a natural language instruction: "Go to Amazon and search for wireless headphones under $50"
-    *   The browser agent sees your actual logged-in Chrome, so it can use Gmail, Google Docs, YouTube, etc.
-    *   For simple URL opening, use \`open_website\` (opens in default browser without AI automation)
-    *   Legacy Playwright tools (\`browser_open\`, \`browser_click\`, etc.) still work for headless tasks
-
-4.  **Windows App Management**:
-    *   \`open_app\` — Open apps by name: 'chrome', 'notepad', 'vscode', 'calculator', 'spotify', etc.
-    *   \`list_windows\` — See all open windows with titles and process names
-    *   \`focus_window\` — Bring a specific window to the foreground by title
-    *   \`close_app\` — Close a running application by name
-    *   \`search_files\` — Find files on disk by name
-
-5.  **Infer and Resolve**: Intelligently infer missing details.
-    *   "tomorrow" -> Resolve to the actual date.
-    *   "my email" -> Assume 'gmail.com' unless specified otherwise.
-    *   "open code" -> \`open_app('vscode')\`
-
-6.  **Stream Progress**: Provide real-time feedback for each step.
-    *   "Opening VS Code..."
-    *   "Navigating to YouTube..."
-    *   "Searching for your file..."
-
-7.  **PowerShell for System Tasks**: Use \`run_command\` for anything system-level:
-    *   Get IP: \`run_command('(Invoke-WebRequest -Uri "https://api.ipify.org").Content')\`
-    *   System info: \`run_command('Get-ComputerInfo | Select-Object CsName, OsName')\`
-    *   File operations: \`run_command('Get-ChildItem ~/Desktop')\`
-
-You are running on Windows. Use Windows-specific commands and paths. PowerShell is available via \`run_command\`.
-Your personality is helpful, concise, and capable. You get things done.`;
-
-// ─── Tool definitions (Gemini function calling format) ────────────────────────
-const TOOLS_DECLARATIONS = [
+// ─── Tool declarations ────────────────────────────────────────────────────────
+// CORE tools — always sent to Groq (kept minimal to stay under token limits)
+const CORE_TOOLS = [
   {
-    name: "open_app",
-    description: "Open a Windows application by name or full path. Examples: Chrome, Notepad, Calculator, Spotify.",
+    name: 'open_app',
+    description: 'Open a Windows app by name. Examples: chrome, notepad, calculator, vscode, spotify.',
     parameters: {
-      type: "object",
+      type: 'object',
+      properties: { app: { type: 'string', description: 'App name or .exe path' } },
+      required: ['app'],
+    },
+  },
+  {
+    name: 'open_website',
+    description: 'Open a URL in the default browser.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Full URL with https://' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'run_command',
+    description: 'Run a PowerShell command. Use for system info, file ops, settings.',
+    parameters: {
+      type: 'object',
       properties: {
-        app: { type: "string", description: "App name or full .exe path" }
+        command: { type: 'string', description: 'PowerShell command' },
+        silent: { type: 'boolean', description: 'If true, suppress output' },
       },
-      required: ["app"]
-    }
+      required: ['command'],
+    },
   },
   {
-    name: "open_website",
-    description: "Open a URL in the default browser.",
+    name: 'set_timer',
+    description: 'Set a countdown timer with a notification when done.',
     parameters: {
-      type: "object",
+      type: 'object',
       properties: {
-        url: { type: "string", description: "Full URL including https://" }
+        minutes: { type: 'number', description: 'Duration in minutes' },
+        label: { type: 'string', description: 'Timer label' },
       },
-      required: ["url"]
-    }
+      required: ['minutes', 'label'],
+    },
   },
   {
-    name: "type_text",
-    description: "Type text at the current cursor position using the keyboard.",
+    name: 'show_notification',
+    description: 'Show a Windows desktop notification.',
     parameters: {
-      type: "object",
+      type: 'object',
       properties: {
-        text: { type: "string", description: "Text to type" }
+        title: { type: 'string', description: 'Notification title' },
+        message: { type: 'string', description: 'Notification body' },
       },
-      required: ["text"]
-    }
+      required: ['title', 'message'],
+    },
   },
   {
-    name: "press_key",
-    description: "Press a keyboard key or shortcut. Examples: enter, ctrl+c, alt+tab, win+d.",
+    name: 'take_screenshot',
+    description: 'Take a screenshot of the screen.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'save_task',
+    description: 'Save a task shortcut to the quick-access panel.',
     parameters: {
-      type: "object",
+      type: 'object',
       properties: {
-        key: { type: "string", description: "Key or combo to press" }
+        name: { type: 'string', description: 'Short task name' },
+        instruction: { type: 'string', description: 'Full instruction to run' },
       },
-      required: ["key"]
-    }
+      required: ['name', 'instruction'],
+    },
   },
   {
-    name: "mouse_click",
-    description: "Click at specific screen coordinates (x, y). Get coordinates from take_screenshot first.",
+    name: 'list_windows',
+    description: 'List all open windows with titles and process names.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'focus_window',
+    description: 'Bring a window to the foreground by title.',
     parameters: {
-      type: "object",
+      type: 'object',
+      properties: { title: { type: 'string', description: 'Partial window title' } },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'close_app',
+    description: 'Close a running app by process name.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Process name to close' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'search_files',
+    description: 'Search for files by name pattern.',
+    parameters: {
+      type: 'object',
       properties: {
-        x: { type: "number", description: "X coordinate in pixels" },
-        y: { type: "number", description: "Y coordinate in pixels" }
+        query: { type: 'string', description: 'Filename pattern' },
+        directory: { type: 'string', description: 'Directory to search (default: user profile)' },
       },
-      required: ["x", "y"]
-    }
+      required: ['query'],
+    },
   },
   {
-    name: "run_command",
-    description: "Run a PowerShell command or shell command. Use for file operations, settings, or anything not covered by other tools.",
+    name: 'type_text',
+    description: 'Type text at the current cursor position.',
     parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "PowerShell command to run" },
-        silent: { type: "boolean", description: "If true, don't show output to user" }
-      },
-      required: ["command"]
-    }
+      type: 'object',
+      properties: { text: { type: 'string', description: 'Text to type' } },
+      required: ['text'],
+    },
   },
   {
-    name: "set_timer",
-    description: "Set a countdown timer. Shows a Windows notification when time is up.",
+    name: 'press_key',
+    description: 'Press a key or shortcut. Examples: enter, ctrl+c, alt+tab.',
     parameters: {
-      type: "object",
-      properties: {
-        minutes: { type: "number", description: "Duration in minutes" },
-        label: { type: "string", description: "Timer label shown in notification" }
-      },
-      required: ["minutes", "label"]
-    }
+      type: 'object',
+      properties: { key: { type: 'string', description: 'Key or combo' } },
+      required: ['key'],
+    },
   },
-  {
-    name: "take_screenshot",
-    description: "Take a screenshot of the current screen. Use this to see what is on screen before clicking.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "show_notification",
-    description: "Show a Windows desktop notification to the user.",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Notification title" },
-        message: { type: "string", description: "Notification body text" }
-      },
-      required: ["title", "message"]
-    }
-  },
-  {
-    name: "save_task",
-    description: "Save a new preset task to the quick-access panel so the user can run it again with one click.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Short task name shown on button" },
-        instruction: { type: "string", description: "The full instruction to run when clicked" }
-      },
-      required: ["name", "instruction"]
-    }
-  },
-  // ── AI-powered Browser Use tool ──
-  {
-    name: "run_task",
-    description: "Run a natural-language browser automation task using AI (Gemini Vision). Connects to your real Chrome browser with all cookies and logins intact. Use for any web task: searching, filling forms, reading content, navigating sites. Example: 'Go to Gmail and find the latest email from John'.",
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "Natural language instruction for the browser agent. Be specific and descriptive." }
-      },
-      required: ["task"]
-    }
-  },
-  // ── Legacy Playwright browser automation tools (headless fallback) ──
-  {
-    name: "browser_open",
-    description: "Open a URL in a Playwright-controlled headless Chromium browser. Use run_task for most web tasks; use this only when you need headless automation without user's Chrome session.",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to navigate to (https:// prefix added automatically if missing)" }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "browser_click",
-    description: "Click an element on the current Playwright browser page by CSS selector or visible text.",
-    parameters: {
-      type: "object",
-      properties: {
-        selector: { type: "string", description: "CSS selector of the element to click" },
-        text: { type: "string", description: "Visible text of the element to click. Uses partial matching." }
-      },
-      required: []
-    }
-  },
-  {
-    name: "browser_type",
-    description: "Type text into an input field on the current Playwright browser page.",
-    parameters: {
-      type: "object",
-      properties: {
-        selector: { type: "string", description: "CSS selector of the input field" },
-        placeholder: { type: "string", description: "Placeholder text of the input field" },
-        text: { type: "string", description: "Text to type into the field" }
-      },
-      required: ["text"]
-    }
-  },
-  {
-    name: "browser_read",
-    description: "Read the visible text content of the current Playwright browser page.",
-    parameters: {
-      type: "object",
-      properties: {
-        selector: { type: "string", description: "CSS selector to read text from. Omit to read entire page." }
-      },
-      required: []
-    }
-  },
-  {
-    name: "browser_close",
-    description: "Close the Playwright browser session.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  // ── Windows automation tools ──
-  {
-    name: "list_windows",
-    description: "List all currently visible windows with their titles, process names, and PIDs.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "focus_window",
-    description: "Bring a specific window to the foreground by matching its title. Uses partial matching.",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Partial window title to match (e.g. 'Visual Studio Code', 'Notepad')" }
-      },
-      required: ["title"]
-    }
-  },
-  {
-    name: "close_app",
-    description: "Close a running application by process name. Uses partial matching.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Process name to close (e.g. 'notepad', 'chrome', 'Code')" }
-      },
-      required: ["name"]
-    }
-  },
-  {
-    name: "search_files",
-    description: "Search for files on disk by filename pattern. Searches user profile by default, max depth 4.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Filename pattern to search for (e.g. 'report.pdf', '.docx')" },
-        directory: { type: "string", description: "Directory to search in. Defaults to user profile." }
-      },
-      required: ["query"]
-    }
-  }
 ];
 
-// Gemini tool config object
-const GEMINI_TOOLS = [{ functionDeclarations: TOOLS_DECLARATIONS }];
+// BROWSER tools — only added when message mentions web/browser tasks
+const BROWSER_TOOLS = [
+  {
+    name: 'run_task',
+    description: 'Run a browser automation task using AI on your real Chrome.',
+    parameters: {
+      type: 'object',
+      properties: { task: { type: 'string', description: 'Natural language browser instruction' } },
+      required: ['task'],
+    },
+  },
+  {
+    name: 'browser_open',
+    description: 'Open a URL in a headless Playwright browser.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'URL to open' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'browser_click',
+    description: 'Click an element on the current browser page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector' },
+        text: { type: 'string', description: 'Visible text to click' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'browser_type',
+    description: 'Type into an input field on the current browser page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector' },
+        text: { type: 'string', description: 'Text to type' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'browser_read',
+    description: 'Read visible text from the current browser page.',
+    parameters: {
+      type: 'object',
+      properties: { selector: { type: 'string', description: 'CSS selector (omit for full page)' } },
+      required: [],
+    },
+  },
+  {
+    name: 'browser_close',
+    description: 'Close the Playwright browser.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'mouse_click',
+    description: 'Click at screen coordinates (x, y).',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'X coordinate' },
+        y: { type: 'number', description: 'Y coordinate' },
+      },
+      required: ['x', 'y'],
+    },
+  },
+];
+
+// Gemini always gets all tools
+const GEMINI_TOOLS = [{ functionDeclarations: [...CORE_TOOLS, ...BROWSER_TOOLS] }];
+
+// Groq gets core tools by default; browser tools added only when needed
+const BROWSER_KEYWORDS = /browser|chrome|web|website|url|http|google|youtube|gmail|search online|navigate/i;
+
+function getGroqTools(message) {
+  const tools = [...CORE_TOOLS];
+  if (BROWSER_KEYWORDS.test(message)) {
+    tools.push(...BROWSER_TOOLS);
+  }
+  return tools.map(t => ({ type: 'function', function: t }));
+}
 
 // ─── Client initialization ────────────────────────────────────────────────────
-export function initClient({ provider = 'gemini', apiKey, model } = {}) {
+/**
+ * Initialize the LLM client with user-supplied credentials.
+ * @param {object} opts
+ * @param {'groq'|'gemini'} opts.provider
+ * @param {string} opts.apiKey  — user's own API key
+ * @param {string} [opts.model] — optional model override
+ */
+export function initClient({ provider = 'groq', apiKey, model } = {}) {
+  if (!apiKey || !apiKey.trim()) {
+    console.warn('[Niro] No API key provided — agent will not run until a key is set in Settings.');
+    llmClient = null;
+    return false;
+  }
+
   try {
     currentProvider = provider;
 
-    // Gemini cloud
-    if (!apiKey) {
-      console.warn('[Niro] No Gemini API key provided');
-      return false;
+    if (provider === 'gemini') {
+      currentModel = model || PROVIDER_DEFAULTS.gemini.model;
+      llmClient = new GoogleGenAI({ apiKey: apiKey.trim() });
+      console.log(`[Niro] Gemini client initialized (model: ${currentModel})`);
+    } else {
+      // Groq uses OpenAI-compatible REST — no SDK needed, plain fetch
+      currentModel = model || PROVIDER_DEFAULTS.groq.model;
+      llmClient = {
+        provider: 'groq',
+        apiKey: apiKey.trim(),
+        baseURL: PROVIDER_DEFAULTS.groq.baseURL,
+        model: currentModel,
+      };
+      console.log(`[Niro] Groq client initialized (model: ${currentModel})`);
     }
-    currentModel = model || GEMINI_CLOUD_MODEL;
-    llmClient = new GoogleGenAI({ apiKey });
-    console.log(`[Niro] Gemini cloud client initialized (model: ${currentModel})`);
-    return true;
 
+    return true;
   } catch (e) {
     console.error('[Niro] Failed to initialize LLM client:', e.message);
+    llmClient = null;
     return false;
   }
 }
 
-/**
- * Stop the currently running agent.
- */
+// ─── Stop agent ───────────────────────────────────────────────────────────────
 export function stopAgent() {
   abortFlag = true;
 }
 
-// ─── Gemini message format helpers ───────────────────────────────────────────
-
-/**
- * Convert our flat chat history [{role, content}] to Gemini's contents format.
- * Gemini uses { role: 'user'|'model', parts: [{text}] }
- * Tool calls/results are represented as functionCall/functionResponse parts.
- */
+// ─── Gemini helpers ───────────────────────────────────────────────────────────
 function historyToGeminiContents(chatHistory) {
   return chatHistory
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
+      parts: [{ text: m.content }],
     }));
 }
 
-// ─── Local Ollama fallback (OpenAI-compat via fetch) ─────────────────────────
-async function callLocalLLM(messages) {
-  const { baseUrl, model } = llmClient;
-  const body = JSON.stringify({
+// ─── Groq helpers (OpenAI-compatible fetch) ───────────────────────────────────
+function historyToOpenAIMessages(chatHistory) {
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const m of chatHistory) {
+    if (m.role === 'user' || m.role === 'assistant') {
+      messages.push({ role: m.role, content: m.content });
+    }
+  }
+  return messages;
+}
+
+async function callGroq(messages, tools) {
+  const { apiKey, baseURL, model } = llmClient;
+  const body = {
     model,
     messages,
-    tools: TOOLS_DECLARATIONS.map(t => ({ type: 'function', function: t })),
+    tools,
     tool_choice: 'auto',
-    max_tokens: 4096,
-    temperature: 0.7,
-  });
+    parallel_tool_calls: false,  // one tool at a time — prevents format errors on free tier
+    max_tokens: 4096,            // stay well under the 6k TPM limit per request
+    temperature: 0.2,            // lower = more reliable tool call JSON generation
+  };
 
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
+  const resp = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer local' },
-    body,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`Local LLM API error (${resp.status}): ${errText}`);
+    // Surface rate limit errors clearly
+    let msg = `Groq API error (${resp.status}): ${errText}`;
+    try {
+      const parsed = JSON.parse(errText);
+      if (parsed?.error?.code === 'rate_limit_exceeded') {
+        msg = `Rate limit hit. Please wait a moment and try again. (${parsed.error.message.split('.')[0]})`;
+      }
+    } catch (_) {}
+    throw new Error(msg);
   }
 
   return resp.json();
@@ -368,23 +352,37 @@ async function callLocalLLM(messages) {
 // ─── Main agent loop ──────────────────────────────────────────────────────────
 export async function runAgent(message, chatHistory, sendEvent) {
   if (!llmClient) {
-    sendEvent('agent:error', { message: 'No Gemini API key configured. Open Settings to add your key.' });
+    sendEvent('agent:error', {
+      message: 'No API key configured. Open ⚙️ Settings and add your Groq or Gemini API key.',
+    });
     return null;
   }
 
-  // Gemini cloud
   abortFlag = false;
 
-  // Build Gemini conversation history (excludes current message — sent separately)
+  try {
+    if (currentProvider === 'gemini') {
+      return await runGeminiAgent(message, chatHistory, sendEvent);
+    } else {
+      return await runGroqAgent(message, chatHistory, sendEvent);
+    }
+  } catch (err) {
+    console.error('[Niro] Agent error:', err);
+    sendEvent('agent:error', { message: err.message || 'Unknown error occurred' });
+    return null;
+  }
+}
+
+// ─── Gemini agent loop ────────────────────────────────────────────────────────
+async function runGeminiAgent(message, chatHistory, sendEvent) {
   const history = historyToGeminiContents(chatHistory);
 
-  // The Gemini SDK uses a chat session with rolling history
   const chat = llmClient.chats.create({
     model: currentModel,
     config: {
       systemInstruction: SYSTEM_PROMPT,
       tools: GEMINI_TOOLS,
-      temperature: 0.7,
+      temperature: 0.2,
       maxOutputTokens: 8192,
     },
     history,
@@ -392,133 +390,228 @@ export async function runAgent(message, chatHistory, sendEvent) {
 
   let maxIterations = 10;
   let fullResponse = '';
+  let nextMessage = { role: 'user', parts: [{ text: message }] };
+  let toolResultParts = null;
 
-  try {
-    // The current user message — start the loop (format as proper Gemini content)
-    let nextMessage = { role: 'user', parts: [{ text: message }] };
-    // Track tool results to feed back
-    let toolResultParts = null;
+  while (maxIterations > 0 && !abortFlag) {
+    maxIterations--;
 
-    while (maxIterations > 0 && !abortFlag) {
-      maxIterations--;
-
-      let response;
-      try {
+    let response;
+    try {
+      if (toolResultParts && toolResultParts.length > 0) {
+        response = await chat.sendMessage({ message: toolResultParts });
+        toolResultParts = null;
+      } else if (nextMessage) {
+        response = await chat.sendMessage({ message: nextMessage });
+        nextMessage = null;
+      } else {
+        break;
+      }
+    } catch (err) {
+      // Handle Gemini rate limit — parse retry delay from error if available
+      const msg = err.message || '';
+      const isRateLimit = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota');
+      if (isRateLimit) {
+        // Try to extract retry delay from error message (e.g. "retry in 38.5s")
+        const delayMatch = msg.match(/retry[^\d]*(\d+(?:\.\d+)?)\s*s/i);
+        const waitMs = delayMatch ? Math.ceil(parseFloat(delayMatch[1])) * 1000 : 40000;
+        const waitSec = Math.ceil(waitMs / 1000);
+        sendEvent('agent:chunk', { role: 'assistant', text: `⏳ Rate limit hit, retrying in ${waitSec}s...` });
+        await new Promise(r => setTimeout(r, waitMs));
+        if (abortFlag) break;
+        // Retry the same message
         if (toolResultParts && toolResultParts.length > 0) {
-          // Feed tool results back as a user turn with functionResponse parts
           response = await chat.sendMessage({ message: toolResultParts });
           toolResultParts = null;
         } else if (nextMessage) {
           response = await chat.sendMessage({ message: nextMessage });
           nextMessage = null;
         } else {
-          // No message to send; break to avoid ContentUnion error
           break;
         }
-      } catch (error) {
-        console.error('[Niro] Gemini API failed:', error.message);
-        throw error;
+      } else {
+        throw err;
       }
+    }
 
-      const candidate = response.candidates?.[0];
-      if (!candidate) break;
+    const candidate = response.candidates?.[0];
+    if (!candidate) break;
 
-      const parts = candidate.content?.parts || [];
-      const hasFunctionCalls = parts.some(p => p.functionCall);
+    const parts = candidate.content?.parts || [];
+    const hasFunctionCalls = parts.some(p => p.functionCall);
 
-      if (hasFunctionCalls) {
-        // Process each function call
-        const responseParts = [];
+    if (hasFunctionCalls) {
+      const responseParts = [];
+      for (const part of parts) {
+        if (!part.functionCall || abortFlag) continue;
+        const toolName = part.functionCall.name;
+        const toolArgs = part.functionCall.args || {};
+        sendEvent('agent:tool', { name: toolName, input: toolArgs });
 
-        for (const part of parts) {
-          if (!part.functionCall) continue;
-          if (abortFlag) break;
-
-          const toolName = part.functionCall.name;
-          const toolArgs = part.functionCall.args || {};
-
-          sendEvent('agent:tool', { name: toolName, input: toolArgs });
-
-          let toolResult;
-          try {
-            const result = await executeTool(toolName, toolArgs);
-            let content = result.result;
-            if (result.isImage) {
-              content = 'Screenshot captured. The image has been taken but cannot be displayed in this context. Describe what action you want to take next.';
-            }
-            toolResult = { output: content };
-          } catch (err) {
-            toolResult = { error: err.message };
-          }
-
-          responseParts.push({
-            functionResponse: {
-              name: toolName,
-              response: toolResult,
-            }
-          });
+        let toolResult;
+        try {
+          const result = await executeTool(toolName, toolArgs);
+          toolResult = {
+            output: result.isImage ? 'Screenshot captured successfully.' : result.result,
+          };
+        } catch (err) {
+          toolResult = { error: err.message };
         }
 
-        toolResultParts = responseParts;
-        continue; // Loop back to feed tool results
+        responseParts.push({
+          functionResponse: { name: toolName, response: toolResult },
+        });
       }
-
-      // Text response
-      const textPart = parts.find(p => p.text);
-      if (textPart?.text) {
-        fullResponse = textPart.text;
-        sendEvent('agent:chunk', { role: 'assistant', text: fullResponse });
-      }
-
-      break;
+      toolResultParts = responseParts;
+      continue;
     }
 
-    if (abortFlag) {
-      sendEvent('agent:error', { message: 'Agent stopped by user.' });
-      return null;
+    const textPart = parts.find(p => p.text);
+    if (textPart?.text) {
+      fullResponse = textPart.text;
+      sendEvent('agent:chunk', { role: 'assistant', text: fullResponse });
     }
+    break;
+  }
 
-    sendEvent('agent:done', {});
-    return fullResponse;
-
-  } catch (err) {
-    console.error('[Niro] Agent error:', err);
-    const errorMsg = err.message || 'Unknown error occurred';
-    sendEvent('agent:error', { message: errorMsg });
+  if (abortFlag) {
+    sendEvent('agent:error', { message: 'Agent stopped by user.' });
     return null;
   }
+
+  sendEvent('agent:done', {});
+  return fullResponse;
 }
 
+// ─── Groq agent loop (OpenAI-compatible) ─────────────────────────────────────
+async function runGroqAgent(message, chatHistory, sendEvent) {
+  const messages = historyToOpenAIMessages(chatHistory);
+  messages.push({ role: 'user', content: message });
+
+  // Select tools based on message content — keeps token count low
+  const tools = getGroqTools(message);
+
+  let maxIterations = 10;
+  let fullResponse = '';
+
+  while (maxIterations > 0 && !abortFlag) {
+    maxIterations--;
+
+    // Retry once on rate limit with a short backoff
+    let data;
+    try {
+      data = await callGroq(messages, tools);
+    } catch (err) {
+      if (err.message.includes('Rate limit') || err.message.includes('rate_limit')) {
+        sendEvent('agent:chunk', { role: 'assistant', text: '⏳ Rate limit hit, retrying in 15s...' });
+        await new Promise(r => setTimeout(r, 15000));
+        if (abortFlag) break;
+        data = await callGroq(messages, tools);
+      } else {
+        throw err;
+      }
+    }
+
+    const choice = data.choices?.[0];
+    if (!choice) break;
+
+    const assistantMsg = choice.message;
+    messages.push(assistantMsg);
+
+    // Tool calls
+    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      for (const toolCall of assistantMsg.tool_calls) {
+        if (abortFlag) break;
+        const toolName = toolCall.function.name;
+        let toolArgs = {};
+        try {
+          toolArgs = JSON.parse(toolCall.function.arguments || '{}');
+        } catch (_) {}
+
+        sendEvent('agent:tool', { name: toolName, input: toolArgs });
+
+        let toolResultContent;
+        try {
+          const result = await executeTool(toolName, toolArgs);
+          toolResultContent = result.isImage
+            ? 'Screenshot captured successfully.'
+            : (result.result || 'Done.');
+        } catch (err) {
+          toolResultContent = `Error: ${err.message}`;
+        }
+
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: toolResultContent,
+        });
+      }
+      continue; // loop back with tool results
+    }
+
+    // Text response
+    const text = assistantMsg.content;
+    if (text) {
+      fullResponse = text;
+      sendEvent('agent:chunk', { role: 'assistant', text: fullResponse });
+    }
+    break;
+  }
+
+  if (abortFlag) {
+    sendEvent('agent:error', { message: 'Agent stopped by user.' });
+    return null;
+  }
+
+  sendEvent('agent:done', {});
+  return fullResponse;
+}
+
+// ─── Voice transcription (Groq Whisper) ──────────────────────────────────────
 /**
- * Transcribe an audio buffer using Groq's Whisper API
+ * Transcribe audio using Groq Whisper API.
+ * Always uses the user's stored Groq API key — never a hardcoded key.
+ * @param {ArrayBuffer|Buffer} buffer  — raw audio bytes
+ * @param {string} groqApiKey          — user's Groq API key from store
  */
-export async function transcribeAudioBuffer(buffer, apiKey) {
-  if (!apiKey) throw new Error('Groq API key is required for voice commands.');
-  
-  const tempClient = new Groq({ apiKey, baseURL: GROQ_CLOUD_BASE });
+export async function transcribeAudioBuffer(buffer, groqApiKey) {
+  if (!groqApiKey || !groqApiKey.trim()) {
+    throw new Error('A Groq API key is required for voice transcription. Add one in ⚙️ Settings.');
+  }
+
   const tempFilePath = path.join(os.tmpdir(), `niro_audio_${Date.now()}.webm`);
-  
-  // Convert ArrayBuffer/Buffer to a Node Buffer and save
   fs.writeFileSync(tempFilePath, Buffer.from(buffer));
-  
+
   try {
-    const transcription = await tempClient.audio.transcriptions.create({
-      file: fs.createReadStream(tempFilePath),
-      model: "whisper-large-v3",
-      response_format: "text"
+    // Use FormData + fetch — no Groq SDK dependency needed
+    const { default: FormData } = await import('form-data');
+    const form = new FormData();
+    form.append('file', fs.createReadStream(tempFilePath), {
+      filename: 'audio.webm',
+      contentType: 'audio/webm',
     });
-    return transcription;
-  } catch (error) {
-    console.error('[Niro] Transcription error:', error.message);
-    throw error;
+    form.append('model', 'whisper-large-v3');
+    form.append('response_format', 'json');
+
+    const resp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${groqApiKey.trim()}`,
+        ...form.getHeaders(),
+      },
+      body: form,
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Groq Whisper error (${resp.status}): ${errText}`);
+    }
+
+    const result = await resp.json();
+    return result.text || '';
   } finally {
     try {
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-      }
-    } catch (e) {
-      console.error('[Niro] Failed to cleanup temp audio file:', e.message);
-    }
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    } catch (_) {}
   }
 }
-

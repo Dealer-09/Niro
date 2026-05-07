@@ -1,13 +1,13 @@
 // main.js — Niro main process: windows, IPC, agent orchestration
-import { app, BrowserWindow, ipcMain, screen, shell, Tray, nativeImage, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, Tray, nativeImage } from 'electron';
 import path from 'path';
-import { fileURLToPath, URL } from 'url';
+import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Load environment variables FIRST before any other imports that might use them
+// Load .env if present (optional — app works entirely from user-supplied keys in Settings)
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 // electron-store is CJS — use createRequire to import it in an ESM context
@@ -15,23 +15,25 @@ const require = createRequire(import.meta.url);
 const Store = require('electron-store');
 
 import { initClient, runAgent, stopAgent, transcribeAudioBuffer } from './agent.js';
-import { setStore, setMainWindow } from './tools.js';
+import { setStore, setMainWindow, setAppPath } from './tools.js';
 import * as browser from './tools/browser.js';
 
 // ─────────────────────────────────────────────────
-// Electron Store
+// Electron Store — all user data persisted here
 // ─────────────────────────────────────────────────
 const store = new Store({
   defaults: {
-    apiKey: process.env.GEMINI_API_KEY || '',
-    provider: 'gemini',
+    // Provider config — user sets their own keys, no hardcoded keys
+    provider: 'groq',          // 'groq' | 'gemini'
+    groqApiKey: '',
+    geminiApiKey: '',
     tasks: [
       { id: '1', name: 'Chrome',      icon: '🌐', instruction: 'Open Google Chrome' },
       { id: '2', name: 'Notepad',     icon: '📝', instruction: 'Open Notepad' },
       { id: '3', name: '25min Timer', icon: '⏱',  instruction: 'Set a 25 minute focus timer' },
       { id: '4', name: '5min Break',  icon: '☕', instruction: 'Set a 5 minute break timer' },
       { id: '5', name: 'My IP',       icon: '🔌', instruction: 'Show my public IP address' },
-      { id: '6', name: 'Screenshot',  icon: '📸', instruction: 'Take a screenshot and tell me what\'s on my screen' },
+      { id: '6', name: 'Screenshot',  icon: '📸', instruction: "Take a screenshot and tell me what's on my screen" },
     ],
     chatHistory: [],
     settings: {
@@ -39,23 +41,48 @@ const store = new Store({
       theme: 'dark',
       autoStart: false,
       sensorHeight: 6,
-    }
-  }
+    },
+  },
 });
 
-// Give tools access to the store
-setStore(store);
-
-// ─────────────────────────────────────────────────
-// Initialize API Clients
-// ─────────────────────────────────────────────────
-function initializeApiClients() {
-  const apiKey = store.get('apiKey') || process.env.GEMINI_API_KEY;
-  initClient({ provider: 'gemini', apiKey });
+// ─── Migrate legacy single `apiKey` field to per-provider keys ───────────────
+const legacyKey = store.get('apiKey');
+if (legacyKey && !store.get('groqApiKey') && !store.get('geminiApiKey')) {
+  const legacyProvider = store.get('provider') || 'groq';
+  if (legacyProvider === 'gemini') {
+    store.set('geminiApiKey', legacyKey);
+  } else {
+    store.set('groqApiKey', legacyKey);
+  }
+  store.delete('apiKey');
+  console.log('[Niro] Migrated legacy apiKey to per-provider storage.');
 }
 
-// Initialize API Clients (moved to app.whenReady)
+// Give tools access to the store and app path
+setStore(store);
+setAppPath(__dirname);
 
+// ─────────────────────────────────────────────────
+// Initialize API client from stored user credentials
+// ─────────────────────────────────────────────────
+function initializeApiClients() {
+  const provider = store.get('provider') || 'groq';
+  const groqKey = store.get('groqApiKey') || '';
+  const geminiKey = store.get('geminiApiKey') || '';
+  const apiKey = provider === 'gemini' ? geminiKey : groqKey;
+
+  if (!apiKey) {
+    console.warn('[Niro] No API key set — open Settings to add a Groq or Gemini key.');
+    return;
+  }
+
+  initClient({ provider, apiKey });
+
+  // Always give the browser agent the Gemini key (it needs it for vision regardless of chat provider)
+  if (geminiKey) {
+    browser.setGeminiApiKey(geminiKey);
+  }
+}
 
 // ─────────────────────────────────────────────────
 // Window references
@@ -76,7 +103,7 @@ const PANEL_HEIGHT = 620;
 function createSensorWindow() {
   const { width } = screen.getPrimaryDisplay().bounds;
   const sensorHeight = store.get('settings.sensorHeight') || 6;
-  const panelX = (width - PANEL_WIDTH) / 2;
+  const panelX = Math.round((width - PANEL_WIDTH) / 2);
 
   sensorWindow = new BrowserWindow({
     width: PANEL_WIDTH,
@@ -95,37 +122,33 @@ function createSensorWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-    }
+    },
   });
 
   sensorWindow.loadFile(path.join(__dirname, 'renderer', 'sensor.html'));
   sensorWindow.setIgnoreMouseEvents(false);
   sensorWindow.show();
 
-  // Prevent sensor from ever gaining visible focus
-  sensorWindow.on('focus', () => {
-    sensorWindow.blur();
-  });
+  sensorWindow.on('focus', () => sensorWindow.blur());
 }
 
 // ─────────────────────────────────────────────────
-// Panel Window (main UI, centered on screen)
+// Panel Window (main UI)
 // ─────────────────────────────────────────────────
 function createPanelWindow() {
   const { width } = screen.getPrimaryDisplay().bounds;
-  const panelX = (width - PANEL_WIDTH) / 2;
-  const panelY = 0;
+  const panelX = Math.round((width - PANEL_WIDTH) / 2);
 
   panelWindow = new BrowserWindow({
     width: PANEL_WIDTH,
     height: PANEL_HEIGHT,
     x: panelX,
-    y: panelY,
+    y: 0,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
-    focusable: true,      // Must be true so the input field can receive keyboard events
+    focusable: true,
     resizable: false,
     hasShadow: false,
     show: false,
@@ -134,13 +157,11 @@ function createPanelWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-    }
+    },
   });
 
   panelWindow.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
   setMainWindow(panelWindow);
-  // Note: we use showInactive() to display the panel without stealing focus.
-  // The user can click the input to focus it naturally.
 }
 
 // ─────────────────────────────────────────────────
@@ -156,11 +177,8 @@ function showPanel() {
 function hidePanel() {
   if (!panelWindow || panelWindow.isDestroyed()) return;
   panelWindow.webContents.send('panel:doHide');
-  // Wait for animation then actually hide
   setTimeout(() => {
-    if (panelWindow && !panelWindow.isDestroyed()) {
-      panelWindow.hide();
-    }
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
   }, 350);
 }
 
@@ -168,9 +186,7 @@ function scheduleHide() {
   clearHideTimeout();
   const delay = store.get('settings.hoverDelay') || 800;
   hideTimeout = setTimeout(() => {
-    if (!mouseInPanel && !mouseInSensor) {
-      hidePanel();
-    }
+    if (!mouseInPanel && !mouseInSensor) hidePanel();
   }, delay);
 }
 
@@ -189,10 +205,7 @@ function createTray() {
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
   tray.setToolTip('Niro — Desktop AI Agent');
-
-  tray.on('click', () => {
-    showPanel();
-  });
+  tray.on('click', () => showPanel());
 }
 
 // ─────────────────────────────────────────────────
@@ -203,20 +216,14 @@ app.whenReady().then(async () => {
   createPanelWindow();
   createTray();
 
-  // Set auto-start
   const autoStart = store.get('settings.autoStart');
   if (autoStart) {
-    app.setLoginItemSettings({
-      openAtLogin: true,
-      path: process.execPath
-    });
+    app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
   }
 
-  // Initialize API Clients after windows are ready
   initializeApiClients();
 
-  // Initialize Browser Agent (Chrome CDP)
-  // Runs in background — failures are non-fatal
+  // Initialize Browser Agent (Chrome CDP) — non-fatal
   browser.initialize().catch(err => {
     console.warn('[main.js] Browser engine init warning:', err.message);
   });
@@ -226,13 +233,10 @@ app.on('window-all-closed', () => {
   // Don't quit — Niro lives in the tray
 });
 
-// Handle quit button from settings
-ipcMain.on('app:quit', () => {
-  app.quit();
-});
+ipcMain.on('app:quit', () => app.quit());
 
 // ─────────────────────────────────────────────────
-// IPC: Panel Visibility (sensor + panel hover tracking)
+// IPC: Panel Visibility
 // ─────────────────────────────────────────────────
 ipcMain.on('sensor:hover', () => {
   mouseInSensor = true;
@@ -270,13 +274,7 @@ ipcMain.handle('agent:run', async (event, message) => {
   agentRunning = true;
 
   const chatHistory = store.get('chatHistory') || [];
-
-  // Save user message
-  chatHistory.push({
-    role: 'user',
-    content: message,
-    timestamp: Date.now()
-  });
+  chatHistory.push({ role: 'user', content: message, timestamp: Date.now() });
 
   const sendEvent = (channel, data) => {
     if (panelWindow && !panelWindow.isDestroyed()) {
@@ -286,21 +284,12 @@ ipcMain.handle('agent:run', async (event, message) => {
 
   try {
     const response = await runAgent(message, chatHistory, sendEvent);
-
     if (response) {
-      chatHistory.push({
-        role: 'assistant',
-        content: response,
-        timestamp: Date.now()
-      });
+      chatHistory.push({ role: 'assistant', content: response, timestamp: Date.now() });
     }
-
-    // Keep only last 50 messages
-    while (chatHistory.length > 50) {
-      chatHistory.shift();
-    }
+    // Keep last 50 messages
+    while (chatHistory.length > 50) chatHistory.shift();
     store.set('chatHistory', chatHistory);
-
   } catch (err) {
     sendEvent('agent:error', { message: err.message });
   } finally {
@@ -316,22 +305,14 @@ ipcMain.handle('agent:stop', () => {
 // ─────────────────────────────────────────────────
 // IPC: Tasks
 // ─────────────────────────────────────────────────
-ipcMain.handle('tasks:get', () => {
-  return store.get('tasks') || [];
-});
+ipcMain.handle('tasks:get', () => store.get('tasks') || []);
 
+// tasks:run — sends instruction back to renderer to run via agent
 ipcMain.handle('tasks:run', async (event, taskId) => {
   const tasks = store.get('tasks') || [];
   const task = tasks.find(t => t.id === taskId);
   if (!task) return;
-
-  // Run the task instruction through the agent
-  const fakeEvent = { sender: panelWindow?.webContents };
-  await ipcMain.emit('agent:run-internal', task.instruction);
-
-  // Actually invoke it properly
   if (panelWindow && !panelWindow.isDestroyed()) {
-    // Trigger agent:run from renderer side logic
     panelWindow.webContents.send('tasks:runInstruction', { instruction: task.instruction });
   }
 });
@@ -349,70 +330,79 @@ ipcMain.handle('tasks:delete', (event, taskId) => {
 // ─────────────────────────────────────────────────
 // IPC: Settings
 // ─────────────────────────────────────────────────
-ipcMain.handle('settings:get', () => {
-  return store.get('settings');
-});
+ipcMain.handle('settings:get', () => store.get('settings'));
 
 ipcMain.handle('settings:set', (event, { key, value }) => {
   store.set(`settings.${key}`, value);
-
   if (key === 'autoStart') {
-    app.setLoginItemSettings({
-      openAtLogin: value,
-      path: process.execPath
-    });
+    app.setLoginItemSettings({ openAtLogin: value, path: process.execPath });
   }
-
   return store.get('settings');
 });
 
-ipcMain.handle('settings:getApiKey', () => {
-  const key = store.get('apiKey') || '';
-  if (key && key.length > 8) {
-    return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4);
-  }
-  return key ? '••••••••' : '';
+// ─── Provider config (Groq / Gemini) ─────────────────────────────────────────
+ipcMain.handle('settings:getProviderConfig', () => {
+  return {
+    provider: store.get('provider') || 'groq',
+    groqApiKey: _maskKey(store.get('groqApiKey') || ''),
+    geminiApiKey: _maskKey(store.get('geminiApiKey') || ''),
+  };
 });
 
-ipcMain.handle('settings:setApiKey', (event, { key }) => {
-  store.set('apiKey', key);
+ipcMain.handle('settings:setProviderConfig', (event, { provider, groqApiKey, geminiApiKey }) => {
+  if (provider) store.set('provider', provider);
+  if (groqApiKey && groqApiKey.trim()) store.set('groqApiKey', groqApiKey.trim());
+  if (geminiApiKey && geminiApiKey.trim()) store.set('geminiApiKey', geminiApiKey.trim());
+  // Re-initialize with new config
   initializeApiClients();
   return true;
 });
 
+// Legacy single-key handlers (kept for backward compat)
+ipcMain.handle('settings:getApiKey', () => {
+  const provider = store.get('provider') || 'groq';
+  const key = provider === 'gemini'
+    ? store.get('geminiApiKey') || ''
+    : store.get('groqApiKey') || '';
+  return _maskKey(key);
+});
+
+ipcMain.handle('settings:setApiKey', (event, { key, provider: p }) => {
+  const provider = p || store.get('provider') || 'groq';
+  if (provider === 'gemini') {
+    store.set('geminiApiKey', key.trim());
+  } else {
+    store.set('groqApiKey', key.trim());
+  }
+  initializeApiClients();
+  return true;
+});
+
+function _maskKey(key) {
+  if (!key || key.length <= 8) return key ? '••••••••' : '';
+  return key.substring(0, 4) + '•'.repeat(key.length - 8) + key.substring(key.length - 4);
+}
+
 // ─────────────────────────────────────────────────
-// IPC: AI Browser Agent (Native JS)
+// IPC: Browser Agent
 // ─────────────────────────────────────────────────
 ipcMain.handle('browser:run', async (event, task) => {
   const sendEvent = (channel, data) => {
-    if (panelWindow && !panelWindow.isDestroyed()) {
-      panelWindow.webContents.send(channel, data);
-    }
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.webContents.send(channel, data);
   };
   return browser.runTask(task, (text) => {
     sendEvent('agent:chunk', { role: 'assistant', text: `[Browser] ${text}` });
   });
 });
 
-ipcMain.handle('browser:navigate', async (event, url) => {
-  return browser.navigate(url);
-});
-
-ipcMain.handle('browser:page', async () => {
-  return browser.getCurrentPage();
-});
-
-ipcMain.handle('browser:ready', () => {
-  return browser.isReady();
-});
-
+ipcMain.handle('browser:navigate', async (event, url) => browser.navigate(url));
+ipcMain.handle('browser:page', async () => browser.getCurrentPage());
+ipcMain.handle('browser:ready', () => browser.isReady());
 
 // ─────────────────────────────────────────────────
 // IPC: Chat History
 // ─────────────────────────────────────────────────
-ipcMain.handle('chat:getHistory', () => {
-  return store.get('chatHistory') || [];
-});
+ipcMain.handle('chat:getHistory', () => store.get('chatHistory') || []);
 
 ipcMain.handle('chat:clear', () => {
   store.set('chatHistory', []);
@@ -420,17 +410,19 @@ ipcMain.handle('chat:clear', () => {
 });
 
 // ─────────────────────────────────────────────────
-// IPC: Audio Transcription
+// IPC: Audio Transcription (Groq Whisper)
+// Always uses the user's Groq API key — never a hardcoded key
 // ─────────────────────────────────────────────────
 ipcMain.handle('audio:transcribe', async (event, buffer) => {
   try {
-    const apiKey = store.get('apiKey') || process.env.GROQ_API_KEY;
-    if (!apiKey) throw new Error('No Groq API key found. Please add one in Settings.');
-    const text = await transcribeAudioBuffer(buffer, apiKey);
+    const groqKey = store.get('groqApiKey') || '';
+    if (!groqKey) {
+      throw new Error('A Groq API key is required for voice transcription. Add one in ⚙️ Settings.');
+    }
+    const text = await transcribeAudioBuffer(buffer, groqKey);
     return text;
   } catch (error) {
     console.error('[Niro] Transcription error:', error.message);
     throw error;
   }
 });
-

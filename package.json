@@ -6,10 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "electron .",
-    "dev": "nodemon --exec electron . --watch main.js --watch preload.js --watch agent.js --watch tools.js --watch renderer",
+    "dev": "nodemon --exec electron . --watch main.js --watch preload.cjs --watch agent.js --watch tools.js --watch renderer --watch tools",
     "build": "electron-builder",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start:python": "python browser_engine.py"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "electron",
@@ -25,12 +24,10 @@
     "@google/genai": "^0.7.0",
     "dotenv": "^16.4.5",
     "electron-store": "^8.2.0",
-    "node-notifier": "^10.0.1",
+    "form-data": "^4.0.5",
     "playwright": "^1.59.1",
     "screenshot-desktop": "^1.15.0",
     "uuid": "^9.0.1"
-  },
-  "optionalDependencies": {
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
@@ -46,11 +43,10 @@
       "preload.cjs",
       "agent.js",
       "tools.js",
-      "local-llm.js",
+      "tools/",
       "renderer/",
       "assets/",
-      "node_modules/",
-      ".env"
+      "node_modules/"
     ],
     "win": {
       "target": "nsis",

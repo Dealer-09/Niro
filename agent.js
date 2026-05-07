@@ -25,7 +25,15 @@ Rules:
 - For opening apps use open_app. For websites use open_website
 - For system info use run_command with PowerShell
 - For timers use set_timer
+- When asked to take a screenshot and describe it: call take_screenshot, then describe exactly what you see in the image
 - Be concise in responses
+
+URL construction rules:
+- YouTube channel: https://www.youtube.com/@<channelname> (e.g. beastboyshub → https://www.youtube.com/@beastboyshub)
+- YouTube search: https://www.youtube.com/results?search_query=<query>
+- YouTube video: https://www.youtube.com/watch?v=<id>
+- Google search: https://www.google.com/search?q=<query>
+- Always use open_website for simple URL opening, not run_task
 
 You are on Windows. PowerShell is available via run_command.`;
 
@@ -233,8 +241,9 @@ const BROWSER_TOOLS = [
 // Gemini always gets all tools
 const GEMINI_TOOLS = [{ functionDeclarations: [...CORE_TOOLS, ...BROWSER_TOOLS] }];
 
-// Groq gets core tools by default; browser tools added only when needed
-const BROWSER_KEYWORDS = /browser|chrome|web|website|url|http|google|youtube|gmail|search online|navigate/i;
+// Groq gets core tools by default; browser tools added only when user explicitly
+// wants AI browser automation (not just opening a URL with open_website)
+const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with)\b/i;
 
 function getGroqTools(message) {
   const tools = [...CORE_TOOLS];
@@ -448,19 +457,36 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
         const toolArgs = part.functionCall.args || {};
         sendEvent('agent:tool', { name: toolName, input: toolArgs });
 
-        let toolResult;
+        let result;
         try {
-          const result = await executeTool(toolName, toolArgs);
-          toolResult = {
-            output: result.isImage ? 'Screenshot captured successfully.' : result.result,
-          };
+          result = await executeTool(toolName, toolArgs);
         } catch (err) {
-          toolResult = { error: err.message };
+          result = { success: false, result: err.message };
         }
 
-        responseParts.push({
-          functionResponse: { name: toolName, response: toolResult },
-        });
+        if (result.isImage && result.result) {
+          // Screenshot: send functionResponse + the actual image inline so Gemini can see it
+          responseParts.push({
+            functionResponse: {
+              name: toolName,
+              response: { output: 'Screenshot captured. Describe what you see in the image below.' },
+            },
+          });
+          // Append the image as a separate inlineData part so the model can actually see it
+          responseParts.push({
+            inlineData: {
+              mimeType: 'image/png',
+              data: result.result, // base64 string
+            },
+          });
+        } else {
+          responseParts.push({
+            functionResponse: {
+              name: toolName,
+              response: { output: result.result || 'Done.' },
+            },
+          });
+        }
       }
       toolResultParts = responseParts;
       continue;
@@ -533,9 +559,13 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
         let toolResultContent;
         try {
           const result = await executeTool(toolName, toolArgs);
-          toolResultContent = result.isImage
-            ? 'Screenshot captured successfully.'
-            : (result.result || 'Done.');
+          if (result.isImage) {
+            // Groq can't process images — tell it the screenshot was taken
+            // and ask it to inform the user that vision is only available with Gemini
+            toolResultContent = 'Screenshot taken successfully. Note: image analysis requires Gemini provider. Please tell the user the screenshot was taken but you cannot describe it without Gemini — suggest switching to Gemini in Settings for vision capabilities.';
+          } else {
+            toolResultContent = result.result || 'Done.';
+          }
         } catch (err) {
           toolResultContent = `Error: ${err.message}`;
         }

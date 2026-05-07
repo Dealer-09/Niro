@@ -5,8 +5,8 @@
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "start": "electron .",
-    "dev": "nodemon --exec electron . --watch main.js --watch preload.cjs --watch agent.js --watch tools.js --watch renderer --watch tools",
+    "start": "electron . --js-flags='--expose-gc'",
+    "dev": "nodemon --exec \"electron . --js-flags='--expose-gc'\" --watch main.js --watch preload.cjs --watch agent.js --watch tools.js --watch renderer --watch tools",
     "build": "electron-builder",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -38,19 +38,65 @@
   "build": {
     "appId": "com.niro.agent",
     "productName": "Niro",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/screenshot-desktop/**",
+      "node_modules/uuid/**"
+    ],
     "files": [
       "main.js",
       "preload.cjs",
       "agent.js",
       "tools.js",
-      "tools/",
-      "renderer/",
-      "assets/",
-      "node_modules/"
+      "tools/browser.js",
+      "tools/chrome.js",
+      "renderer/**",
+      "assets/**",
+      "node_modules/**",
+      "!node_modules/.cache/**",
+      "!node_modules/.bin/**",
+      "!node_modules/**/test/**",
+      "!node_modules/**/tests/**",
+      "!node_modules/**/__tests__/**",
+      "!node_modules/**/spec/**",
+      "!node_modules/**/docs/**",
+      "!node_modules/**/example/**",
+      "!node_modules/**/examples/**",
+      "!node_modules/**/*.md",
+      "!node_modules/**/*.ts",
+      "!node_modules/**/*.map",
+      "!node_modules/**/LICENSE",
+      "!node_modules/**/CHANGELOG*",
+      "!node_modules/**/README*",
+      "!node_modules/playwright-core/lib/server/chromium/**",
+      "!node_modules/playwright-core/lib/server/firefox/**",
+      "!node_modules/playwright-core/lib/server/webkit/**",
+      "!node_modules/playwright-core/lib/server/android/**",
+      "!node_modules/playwright-core/lib/server/electron/**",
+      "!node_modules/playwright-core/lib/cli/**",
+      "!node_modules/playwright-core/lib/image_tools/**",
+      "!node_modules/playwright-core/lib/vite/**",
+      "!node_modules/playwright-core/lib/utilsBundleImpl/**",
+      "!node_modules/playwright-core/lib/mcpBundleImpl*",
+      "!node_modules/playwright-core/lib/zodBundleImpl*",
+      "!node_modules/playwright-core/types/**",
+      "!node_modules/playwright/lib/**",
+      "!node_modules/@google/genai/node_modules/**",
+      "!node_modules/typescript/**",
+      "!node_modules/@types/**",
+      "!node_modules/nodemon/**",
+      "!node_modules/@electron/rebuild/**",
+      "!node_modules/electron-builder/**"
     ],
     "win": {
-      "target": "nsis",
-      "icon": "build_assets/icon.png"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build_assets/icon.png",
+      "compression": "maximum"
     },
     "nsis": {
       "oneClick": false,

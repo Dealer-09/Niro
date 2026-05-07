@@ -7,8 +7,21 @@ import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ─── Chromium flags — reduce RAM usage ───────────────────────────────────────
+// Must be set before app is ready
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128');
+app.commandLine.appendSwitch('disable-features', 'TranslateUI,AutofillServerCommunication');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-default-apps');
+app.commandLine.appendSwitch('disable-extensions');
+app.commandLine.appendSwitch('disable-sync');
+app.commandLine.appendSwitch('metrics-recording-only');
+app.commandLine.appendSwitch('no-first-run');
+app.commandLine.appendSwitch('safebrowsing-disable-auto-update');
+app.commandLine.appendSwitch('disable-component-update');
+
 // Load .env if present (optional — app works entirely from user-supplied keys in Settings)
-dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), '.env') });
 
 // electron-store is CJS — use createRequire to import it in an ESM context
 const require = createRequire(import.meta.url);
@@ -122,6 +135,10 @@ function createSensorWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
+      spellcheck: false,
+      enableWebSQL: false,
+      v8CacheOptions: 'none',
     },
   });
 
@@ -157,11 +174,27 @@ function createPanelWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: true,   // throttle when hidden — saves CPU/RAM
+      spellcheck: false,
+      enableWebSQL: false,
     },
   });
 
   panelWindow.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
   setMainWindow(panelWindow);
+
+  // Free renderer memory when panel is hidden
+  panelWindow.on('hide', () => {
+    if (panelWindow && !panelWindow.isDestroyed()) {
+      panelWindow.webContents.setBackgroundThrottling(true);
+    }
+  });
+
+  panelWindow.on('show', () => {
+    if (panelWindow && !panelWindow.isDestroyed()) {
+      panelWindow.webContents.setBackgroundThrottling(false);
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────
@@ -223,10 +256,19 @@ app.whenReady().then(async () => {
 
   initializeApiClients();
 
-  // Initialize Browser Agent (Chrome CDP) — non-fatal
-  browser.initialize().catch(err => {
-    console.warn('[main.js] Browser engine init warning:', err.message);
-  });
+  // Initialize Browser Agent (Chrome CDP) — non-fatal, deferred 3s to not block startup
+  setTimeout(() => {
+    browser.initialize().catch(err => {
+      console.warn('[main.js] Browser engine init warning:', err.message);
+    });
+  }, 3000);
+
+  // Periodic memory cleanup — run GC every 5 minutes when panel is hidden
+  setInterval(() => {
+    if (panelWindow && !panelWindow.isDestroyed() && !panelWindow.isVisible()) {
+      if (global.gc) global.gc();
+    }
+  }, 5 * 60 * 1000);
 });
 
 app.on('window-all-closed', () => {

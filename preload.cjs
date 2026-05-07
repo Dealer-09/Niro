@@ -66,13 +66,10 @@ contextBridge.exposeInMainWorld('niro', {
   onTaskRun:      (cb) => _on('tasks:runInstruction', cb),
 
   // ── Cleanup ────────────────────────────────────────────────────────────────
-  // Call this on window unload to prevent memory leaks
   cleanup: () => {
     for (const { channel, wrapped } of _listeners) {
       ipcRenderer.removeListener(channel, wrapped);
     }
     _listeners.length = 0;
   },
-
-  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 });

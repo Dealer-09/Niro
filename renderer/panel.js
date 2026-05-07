@@ -172,10 +172,21 @@
     const display = inputStr
       ? `${inputStr.substring(0, 40)}${inputStr.length > 40 ? '...' : ''}`
       : '';
-    addMessage(
-      'tool-status',
-      `<span class="tool-icon">⚡</span> Running: <span class="tool-name">${data.name}</span>${display ? ' › ' + display : ''}`
-    );
+    const msg = document.createElement('div');
+    msg.classList.add('message', 'tool-status');
+    const icon = document.createElement('span');
+    icon.className = 'tool-icon';
+    icon.textContent = '⚡';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'tool-name';
+    nameSpan.textContent = data.name;  // textContent — safe, no XSS
+    msg.appendChild(icon);
+    msg.appendChild(document.createTextNode(' Running: '));
+    msg.appendChild(nameSpan);
+    if (display) msg.appendChild(document.createTextNode(' › ' + display));
+    if (emptyState) emptyState.style.display = 'none';
+    chatArea.appendChild(msg);
+    chatArea.scrollTop = chatArea.scrollHeight;
   });
 
   window.niro.onDone(() => {

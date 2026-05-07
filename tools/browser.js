@@ -30,7 +30,10 @@ Respond ONLY as JSON: { "thought": "...", "action": "...", "params": { ... } }
 async function ensureReady() {
   if (_ready && _cdpBrowser) return;
 
-  if (_initPromise) return _initPromise;
+  // If a previous init failed, reset so we can retry
+  if (_initPromise) {
+    try { await _initPromise; return; } catch (_) { _initPromise = null; }
+  }
 
   _initPromise = (async () => {
     const { chromium } = await import('playwright');
@@ -44,7 +47,13 @@ async function ensureReady() {
     console.log('[browser.js] Connected to Chrome CDP.');
   })();
 
-  return _initPromise;
+  try {
+    await _initPromise;
+  } catch (err) {
+    _initPromise = null; // reset so next call can retry
+    _ready = false;
+    throw err;
+  }
 }
 
 // ─── Helper: get active page ─────────────────────────────────────────────────

@@ -3,6 +3,9 @@ import { exec, spawn } from 'child_process';
 import { shell, Notification } from 'electron';
 import path from 'path';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import screenshotDesktop from 'screenshot-desktop';
 import * as browserBridge from './tools/browser.js';
 
 const execAsync = promisify(exec);
@@ -16,7 +19,7 @@ let playwrightPage = null;
 async function getPlaywrightPage() {
   if (playwrightPage && !playwrightPage.isClosed()) return playwrightPage;
   const { chromium } = await import('playwright');
-  playwrightBrowser = await chromium.launch({ headless: false });
+  playwrightBrowser = await chromium.launch({ headless: true });  // headless — legacy fallback only
   const context = await playwrightBrowser.newContext();
   playwrightPage = await context.newPage();
   return playwrightPage;
@@ -66,8 +69,14 @@ function getIconPath() {
 // Tool: open_app
 // ─────────────────────────────────────────────────
 const APP_PATHS = {
-  'chrome': 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'google chrome': 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  // Chrome — check both Program Files locations
+  'chrome': [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  ].find(p => { try { return existsSync(p); } catch(_) { return false; } })
+    || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'google chrome': null, // resolved below
   'firefox': 'C:\\Program Files\\Mozilla Firefox\\firefox.exe',
   'notepad': 'notepad.exe',
   'calculator': 'calc.exe',
@@ -76,14 +85,16 @@ const APP_PATHS = {
   'file explorer': 'explorer.exe',
   'cmd': 'cmd.exe',
   'powershell': 'powershell.exe',
-  'spotify': path.join(process.env.APPDATA || '', 'Spotify\\Spotify.exe'),
-  'discord': path.join(process.env.LOCALAPPDATA || '', 'Discord\\Update.exe --processStart Discord.exe'),
-  'vscode': path.join(process.env.LOCALAPPDATA || '', 'Programs\\Microsoft VS Code\\Code.exe'),
-  'vs code': path.join(process.env.LOCALAPPDATA || '', 'Programs\\Microsoft VS Code\\Code.exe'),
-  'code': path.join(process.env.LOCALAPPDATA || '', 'Programs\\Microsoft VS Code\\Code.exe'),
-  'slack': path.join(process.env.LOCALAPPDATA || '', 'slack\\slack.exe'),
-  'teams': path.join(process.env.LOCALAPPDATA || '', 'Microsoft\\Teams\\current\\Teams.exe'),
+  'spotify': path.join(process.env.APPDATA || '', 'Spotify', 'Spotify.exe'),
+  'discord': path.join(process.env.LOCALAPPDATA || '', 'Discord', 'Update.exe'),
+  'vscode': path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+  'vs code': path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+  'code': path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+  'slack': path.join(process.env.LOCALAPPDATA || '', 'slack', 'slack.exe'),
+  'teams': path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Teams', 'current', 'Teams.exe'),
 };
+// alias
+APP_PATHS['google chrome'] = APP_PATHS['chrome'];
 
 async function open_app({ app }) {
   try {
@@ -91,7 +102,9 @@ async function open_app({ app }) {
     const knownPath = APP_PATHS[appLower];
 
     if (knownPath) {
-      spawn(knownPath, [], { detached: true, stdio: 'ignore', shell: true }).unref();
+      // Discord needs special args
+      const args = appLower === 'discord' ? ['--processStart', 'Discord.exe'] : [];
+      spawn(knownPath, args, { detached: true, stdio: 'ignore', shell: false }).unref();
       return { success: true, result: `Opened ${app}` };
     }
 
@@ -101,8 +114,10 @@ async function open_app({ app }) {
       return { success: true, result: `Opened ${app}` };
     }
 
-    // Fallback: try 'start' command via PowerShell
-    await execAsync(`powershell -Command "Start-Process '${app}'"`, { timeout: 10000 });
+    // Fallback: try Start-Process via EncodedCommand
+    const cmd = `Start-Process '${app.replace(/'/g, "''")}'`;
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
+    await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 10000 });
     return { success: true, result: `Opened ${app}` };
   } catch (err) {
     return { success: false, result: `Failed to open ${app}: ${err.message}` };
@@ -218,10 +233,10 @@ async function mouse_click({ x, y }) {
 // ─────────────────────────────────────────────────
 async function run_command({ command, silent = false }) {
   try {
-    // Sanitize: escape double quotes for powershell
-    const sanitized = command.replace(/"/g, '\\"');
+    // Use -EncodedCommand to avoid any quoting/escaping issues
+    const encoded = Buffer.from(command, 'utf16le').toString('base64');
     const { stdout, stderr } = await execAsync(
-      `powershell -NoProfile -Command "${sanitized}"`,
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
       { timeout: 30000, maxBuffer: 1024 * 1024 }
     );
     const output = stdout.trim() || stderr.trim() || '(no output)';
@@ -237,15 +252,36 @@ async function run_command({ command, silent = false }) {
 // ─────────────────────────────────────────────────
 // Tool: set_timer
 // ─────────────────────────────────────────────────
-async function set_timer({ minutes, label }) {
+async function set_timer({ minutes, label, seconds }) {
   try {
-    const id = `timer_${Date.now()}`;
-    const ms = minutes * 60 * 1000;
+    let ms;
+    let displayText;
 
+    const mins = Number(minutes) || 0;
+    const secs = Number(seconds) || 0;
+
+    if (secs > 0) {
+      ms = secs * 1000;
+      displayText = secs < 60 ? `${secs} second` : `${Math.round(secs / 60)} minute`;
+    } else if (mins > 0) {
+      // If fractional minutes passed (e.g. 0.17 for ~10s), convert properly
+      if (mins < 1) {
+        const actualSeconds = Math.round(mins * 60);
+        ms = actualSeconds * 1000;
+        displayText = `${actualSeconds} second`;
+      } else {
+        ms = mins * 60 * 1000;
+        displayText = `${mins} minute`;
+      }
+    } else {
+      return { success: false, result: 'Timer duration must be greater than 0. Specify minutes or seconds.' };
+    }
+
+    const id = `timer_${Date.now()}`;
     const timeout = setTimeout(() => {
       const notif = new Notification({
         title: '⏱ Timer Complete!',
-        body: label || `Your ${minutes} minute timer is done!`,
+        body: label || `Your ${displayText} timer is done!`,
         icon: getIconPath(),
       });
       notif.show();
@@ -256,7 +292,7 @@ async function set_timer({ minutes, label }) {
 
     return {
       success: true,
-      result: `Timer set: "${label}" — ${minutes} minute(s). You'll get a notification when it's done.`
+      result: `Timer set: "${label}" — ${displayText}(s). You'll get a notification when it's done.`
     };
   } catch (err) {
     return { success: false, result: `Failed to set timer: ${err.message}` };
@@ -268,14 +304,9 @@ async function set_timer({ minutes, label }) {
 // ─────────────────────────────────────────────────
 async function take_screenshot() {
   try {
-    const screenshot = (await import('screenshot-desktop')).default;
-    const imgBuffer = await screenshot({ format: 'png' });
+    const imgBuffer = await screenshotDesktop({ format: 'png' });
     const base64 = imgBuffer.toString('base64');
-    return {
-      success: true,
-      result: base64,
-      isImage: true
-    };
+    return { success: true, result: base64, isImage: true };
   } catch (err) {
     return { success: false, result: `Screenshot failed: ${err.message}` };
   }
@@ -303,7 +334,6 @@ async function show_notification({ title, message }) {
 // ─────────────────────────────────────────────────
 async function save_task({ name, instruction }) {
   try {
-    const { v4: uuidv4 } = await import('uuid');
     const tasks = store.get('tasks') || [];
 
     const newTask = {
@@ -426,8 +456,10 @@ async function browser_close() {
 // ─────────────────────────────────────────────────
 async function list_windows() {
   try {
+    const cmd = `Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object ProcessName, MainWindowTitle, Id | Format-Table -AutoSize | Out-String -Width 300`;
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
     const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object ProcessName, MainWindowTitle, Id | Format-Table -AutoSize | Out-String -Width 300"`,
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
       { timeout: 10000 }
     );
     return { success: true, result: stdout.trim().substring(0, 2000) || 'No visible windows found.' };
@@ -441,26 +473,27 @@ async function list_windows() {
 // ─────────────────────────────────────────────────
 async function focus_window({ title }) {
   try {
-    const script = `
-      Add-Type @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class WinAPI {
-          [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-          [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-        }
+    const safeTitle = title.replace(/'/g, "''");
+    const cmd = `
+Add-Type @"
+  using System;
+  using System.Runtime.InteropServices;
+  public class WinAPI {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  }
 "@
-      $proc = Get-Process | Where-Object { $_.MainWindowTitle -like '*${title.replace(/'/g, "''")}*' } | Select-Object -First 1
-      if ($proc) {
-        [WinAPI]::ShowWindow($proc.MainWindowHandle, 9)
-        [WinAPI]::SetForegroundWindow($proc.MainWindowHandle)
-        "Focused: $($proc.MainWindowTitle)"
-      } else {
-        "No window found matching '${title}'"
-      }
-    `;
+$proc = Get-Process | Where-Object { $_.MainWindowTitle -like '*${safeTitle}*' } | Select-Object -First 1
+if ($proc) {
+  [WinAPI]::ShowWindow($proc.MainWindowHandle, 9)
+  [WinAPI]::SetForegroundWindow($proc.MainWindowHandle)
+  "Focused: " + $proc.MainWindowTitle
+} else {
+  "No window found matching '${safeTitle}'"
+}`;
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
     const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "${script.replace(/"/g, '\\"')}"`,
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
       { timeout: 10000 }
     );
     return { success: true, result: stdout.trim() };
@@ -474,8 +507,11 @@ async function focus_window({ title }) {
 // ─────────────────────────────────────────────────
 async function close_app({ name }) {
   try {
+    const safeName = name.replace(/'/g, "''");
+    const cmd = `Get-Process -Name '*${safeName}*' -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Select-Object ProcessName`;
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
     const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "Get-Process -Name '*${name.replace(/'/g, "''")}*' -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Select-Object ProcessName"`,
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
       { timeout: 10000 }
     );
     const result = stdout.trim();
@@ -490,9 +526,11 @@ async function close_app({ name }) {
 // ─────────────────────────────────────────────────
 async function search_files({ query, directory }) {
   try {
-    const dir = directory || '$env:USERPROFILE';
+    const dir = directory || process.env.USERPROFILE || 'C:\\Users';
+    const cmd = `Get-ChildItem -Path '${dir.replace(/'/g, "''")}' -Recurse -Filter '*${query.replace(/'/g, "''")}*' -ErrorAction SilentlyContinue -Depth 4 | Select-Object -First 15 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 300`;
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
     const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "Get-ChildItem -Path ${dir} -Recurse -Filter '*${query.replace(/'/g, "''")}*' -ErrorAction SilentlyContinue -Depth 4 | Select-Object -First 15 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 300"`,
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
       { timeout: 20000 }
     );
     return { success: true, result: stdout.trim().substring(0, 2000) || `No files found matching '${query}'` };

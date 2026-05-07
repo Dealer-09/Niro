@@ -18,27 +18,44 @@ const PROVIDER_DEFAULTS = {
 };
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are Niro, a Windows desktop AI assistant. Execute tasks using the provided tools.
+const SYSTEM_PROMPT = `You are Niro, a Windows desktop AI assistant.
 
-Rules:
-- Always use tools to complete tasks, never just describe what to do
-- For opening apps use open_app. For websites use open_website
-- For system info use run_command with PowerShell
-- For timers use set_timer
-- When asked to take a screenshot and describe it: call take_screenshot, then describe exactly what you see in the image
-- Be concise in responses
+STRICT RULES — follow exactly:
+1. Use tools to complete tasks. Never just describe what to do.
+2. After a tool returns a result, give the user the answer as text. STOP. Do not call more tools.
+3. NEVER call show_notification unless the user explicitly says "notify me" or "show a notification".
+4. Use open_app for apps, open_website for URLs, run_command for system info, set_timer for timers.
+5. One tool call per turn unless the task genuinely requires chaining (e.g. open app THEN type).
 
-URL construction rules:
-- YouTube channel: https://www.youtube.com/@<channelname> (e.g. beastboyshub → https://www.youtube.com/@beastboyshub)
+POWERSHELL COMMANDS — use these exact strings:
+- Public IP: (Invoke-RestMethod https://api.ipify.org)
+- RAM total GB: [math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2)
+- RAM free GB: [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)
+- Disk C free GB: [math]::Round((Get-PSDrive C).Free/1GB,1)
+- Disk C total GB: [math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)
+- CPU: (Get-WmiObject Win32_Processor).Name
+- PC name: $env:COMPUTERNAME
+- Windows ver: (Get-WmiObject Win32_OperatingSystem).Caption
+- Top processes: Get-Process | Sort-Object CPU -Desc | Select-Object -First 10 Name,CPU | Format-Table -Auto
+
+For RAM: run TWO separate run_command calls (one for total, one for free), then combine in your answer.
+
+URL rules:
+- YouTube channel @name: https://www.youtube.com/@<name>
 - YouTube search: https://www.youtube.com/results?search_query=<query>
-- YouTube video: https://www.youtube.com/watch?v=<id>
 - Google search: https://www.google.com/search?q=<query>
-- Always use open_website for simple URL opening, not run_task
+- GitHub repo: https://github.com/<owner>/<repo>
+- GitHub user: https://github.com/<username>
+- Wikipedia: https://en.wikipedia.org/wiki/<topic>
+- Reddit: https://www.reddit.com/r/<subreddit>
+- Always use open_website for any URL — never use open_app for websites
 
-You are on Windows. PowerShell is available via run_command.`;
+You are on Windows.`;
 
 // ─── Tool declarations ────────────────────────────────────────────────────────
-// CORE tools — always sent to Groq (kept minimal to stay under token limits)
+// CORE tools — always sent to Groq
+// NOTE: take_screenshot is excluded from Groq — Groq cannot process images.
+// It is only available when using Gemini.
 const CORE_TOOLS = [
   {
     name: 'open_app',
@@ -72,14 +89,15 @@ const CORE_TOOLS = [
   },
   {
     name: 'set_timer',
-    description: 'Set a countdown timer with a notification when done.',
+    description: 'Set a countdown timer with a notification when done. Use minutes for minute-based timers, seconds for second-based timers.',
     parameters: {
       type: 'object',
       properties: {
-        minutes: { type: 'number', description: 'Duration in minutes' },
+        minutes: { type: 'number', description: 'Duration in minutes (use 0 if using seconds)' },
+        seconds: { type: 'number', description: 'Duration in seconds (optional, use instead of minutes for short timers)' },
         label: { type: 'string', description: 'Timer label' },
       },
-      required: ['minutes', 'label'],
+      required: ['label'],
     },
   },
   {
@@ -238,22 +256,83 @@ const BROWSER_TOOLS = [
   },
 ];
 
-// Gemini always gets all tools
+// Gemini always gets all tools including take_screenshot (it can see images)
 const GEMINI_TOOLS = [{ functionDeclarations: [...CORE_TOOLS, ...BROWSER_TOOLS] }];
+
+// Groq tool set — excludes take_screenshot (can't process images)
+// and show_notification (model calls it unprompted too often)
+const GROQ_CORE_TOOLS = CORE_TOOLS.filter(t =>
+  t.name !== 'take_screenshot' && t.name !== 'show_notification'
+);
 
 // Groq gets core tools by default; browser tools added only when user explicitly
 // wants AI browser automation (not just opening a URL with open_website)
 const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with)\b/i;
 
 function getGroqTools(message) {
-  const tools = [...CORE_TOOLS];
+  const tools = [...GROQ_CORE_TOOLS];
   if (BROWSER_KEYWORDS.test(message)) {
     tools.push(...BROWSER_TOOLS);
   }
   return tools.map(t => ({ type: 'function', function: t }));
 }
 
-// ─── Client initialization ────────────────────────────────────────────────────
+// ─── Groq: static lookup tables (defined once, not per-call) ─────────────────
+const DIRECT_COMMANDS = [
+  {
+    pattern: /\b(public\s+)?ip(\s+address)?\b/i,
+    tool: 'run_command',
+    args: { command: '(Invoke-RestMethod https://api.ipify.org)' },
+    format: (r) => `Your public IP address is ${r.trim()}.`,
+  },
+  {
+    pattern: /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|usage|available)\b/i,
+    isRam: true,
+  },
+  {
+    pattern: /\b(disk|drive|storage|space)\b.*\bC\b|\bC\b.*\b(disk|drive|storage|space)\b|\bhow much.*free.*disk\b|\bdisk.*free\b/i,
+    tool: 'run_command',
+    args: { command: '[math]::Round((Get-PSDrive C).Free/1GB,1)' },
+    format: (r) => `C drive has ${r.trim()} GB free.`,
+  },
+  {
+    pattern: /\b(computer|pc|machine|host)\s*name\b/i,
+    tool: 'run_command',
+    args: { command: '$env:COMPUTERNAME' },
+    format: (r) => `Your computer name is ${r.trim()}.`,
+  },
+  {
+    pattern: /\b(cpu|processor)\b/i,
+    tool: 'run_command',
+    args: { command: '(Get-WmiObject Win32_Processor).Name' },
+    format: (r) => `Your CPU is: ${r.trim()}`,
+  },
+  {
+    pattern: /\bwindows\s*(version|ver)\b|\bos\s*version\b/i,
+    tool: 'run_command',
+    args: { command: '(Get-WmiObject Win32_OperatingSystem).Caption' },
+    format: (r) => `Your Windows version is: ${r.trim()}`,
+  },
+  {
+    pattern: /\b(top|running)\s*(processes|apps|programs)\b.*\bcpu\b|\bcpu\b.*\b(processes|apps)\b/i,
+    tool: 'run_command',
+    args: { command: 'Get-Process | Sort-Object CPU -Desc | Select-Object -First 10 Name,@{N="CPU(s)";E={[math]::Round($_.CPU,1)}} | Format-Table -Auto | Out-String -Width 200' },
+    format: (r) => `Top processes by CPU:\n${r.trim()}`,
+  },
+  {
+    pattern: /\b(top|most)\s*\d*\s*(processes|apps|programs)\b.*\bmemory\b|\bmemory\b.*\b(processes|apps)\b|\bprocesses.*ram\b|\bram.*processes\b/i,
+    tool: 'run_command',
+    args: { command: 'Get-Process | Sort-Object WorkingSet -Desc | Select-Object -First 10 Name,@{N="RAM(MB)";E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -Auto | Out-String -Width 200' },
+    format: (r) => `Top processes by memory:\n${r.trim()}`,
+  },
+];
+
+// Fire-and-forget tools: execute once, reply directly, never loop back to model
+const TERMINAL_TOOLS = new Set([
+  'open_website', 'open_app', 'set_timer', 'show_notification',
+  'focus_window', 'close_app', 'press_key', 'type_text', 'mouse_click',
+  'save_task',
+]);
 /**
  * Initialize the LLM client with user-supplied credentials.
  * @param {object} opts
@@ -313,7 +392,10 @@ function historyToGeminiContents(chatHistory) {
 // ─── Groq helpers (OpenAI-compatible fetch) ───────────────────────────────────
 function historyToOpenAIMessages(chatHistory) {
   const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
-  for (const m of chatHistory) {
+  // Only send last 4 messages to Groq — keeps token count low and avoids
+  // cross-contamination between different queries in the same session
+  const recent = chatHistory.slice(-4);
+  for (const m of recent) {
     if (m.role === 'user' || m.role === 'assistant') {
       messages.push({ role: m.role, content: m.content });
     }
@@ -328,34 +410,41 @@ async function callGroq(messages, tools) {
     messages,
     tools,
     tool_choice: 'auto',
-    parallel_tool_calls: false,  // one tool at a time — prevents format errors on free tier
-    max_tokens: 4096,            // stay well under the 6k TPM limit per request
-    temperature: 0.2,            // lower = more reliable tool call JSON generation
+    parallel_tool_calls: false,
+    max_tokens: 1024,
+    temperature: 0.2,
   };
 
-  const resp = await fetch(`${baseURL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    // Surface rate limit errors clearly
-    let msg = `Groq API error (${resp.status}): ${errText}`;
-    try {
-      const parsed = JSON.parse(errText);
-      if (parsed?.error?.code === 'rate_limit_exceeded') {
-        msg = `Rate limit hit. Please wait a moment and try again. (${parsed.error.message.split('.')[0]})`;
-      }
-    } catch (_) {}
-    throw new Error(msg);
+  try {
+    const resp = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      let msg = `Groq API error (${resp.status}): ${errText}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed?.error?.code === 'rate_limit_exceeded') {
+          msg = `Rate limit hit. Please wait a moment and try again. (${parsed.error.message.split('.')[0]})`;
+        }
+      } catch (_) {}
+      throw new Error(msg);
+    }
+
+    return resp.json();
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return resp.json();
 }
 
 // ─── Main agent loop ──────────────────────────────────────────────────────────
@@ -511,6 +600,106 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
 
 // ─── Groq agent loop (OpenAI-compatible) ─────────────────────────────────────
 async function runGroqAgent(message, chatHistory, sendEvent) {
+  // Screenshot requires vision — Groq can't process images, short-circuit immediately
+  if (/screenshot|what('s| is) on (my )?screen|what do you see/i.test(message)) {
+    const reply = '📸 Screenshot and screen description requires Gemini (vision model). Switch to Gemini in ⚙️ Settings to use this feature.';
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  // ── Direct intercept: explicit notification requests ─────────────────────
+  const notifMatch = /\b(show|send|display|give me|pop up)\b.*\bnotification\b|\bnotif(y|ication)\b.*\bsaying\b/i.test(message);
+  if (notifMatch) {
+    // Extract the message text — look for quoted string or "saying X"
+    const quotedMatch = message.match(/["']([^"']+)["']/);
+    const sayingMatch = message.match(/\bsaying\s+["']?([^"']+?)["']?\s*$/i);
+    const notifText = quotedMatch?.[1] || sayingMatch?.[1] || message.replace(/show.*notification.*saying/i, '').trim();
+    const notifTitle = 'Niro';
+    sendEvent('agent:tool', { name: 'show_notification', input: { title: notifTitle, message: notifText } });
+    await executeTool('show_notification', { title: notifTitle, message: notifText });
+    const reply = `Notification shown: "${notifText}"`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  // ── Direct intercepts for common system info queries ──────────────────────
+  // Skip intercepts for multi-part queries — let the LLM handle those
+  const isMultiPartQuery = /\band\b.*\band\b|,.*,|all in one|together|combined|both|multiple/i.test(message)
+    || (message.match(/\band\b/g) || []).length >= 2;
+
+  if (!isMultiPartQuery) {
+
+  // ── Direct intercept for file search ─────────────────────────────────────
+  // Only trigger if message explicitly asks to find/search for files
+  const isFileSearch = /\b(find|search|look for|locate)\b.*\bfile[s]?\b|\bfile[s]?\b.*\b(find|search|on desktop|in downloads|in documents)\b/i.test(message);
+  const desktopMatch   = /\bdesktop\b/i.test(message);
+  const downloadsMatch = /\bdownloads?\b/i.test(message);
+  const documentsMatch = /\bdocuments?\b/i.test(message);
+  const extMatch   = isFileSearch ? message.match(/\b(pdf|docx?|txt|xlsx?|png|jpg|jpeg|mp4|mp3|zip)\b/i) : null;
+  const namedMatch = isFileSearch ? message.match(/\bnamed?\s+["']?([^\s"']+)["']?/i) : null;
+
+  if (extMatch || namedMatch) {
+    const query = namedMatch ? namedMatch[1] : `.${extMatch[1]}`;
+    let dir = process.env.USERPROFILE || 'C:\\Users\\' + (process.env.USERNAME || 'User');
+    if (desktopMatch) dir = `${process.env.USERPROFILE}\\Desktop`;
+    else if (downloadsMatch) dir = `${process.env.USERPROFILE}\\Downloads`;
+    else if (documentsMatch) dir = `${process.env.USERPROFILE}\\Documents`;
+
+    sendEvent('agent:tool', { name: 'search_files', input: { query, directory: dir } });
+    const result = await executeTool('search_files', { query, directory: dir });
+    const reply = result.success && result.result !== `No files found matching '${query}'`
+      ? `Found files matching "${query}":\n${result.result}`
+      : `No files found matching "${query}" in ${dir.split('\\').pop()}.`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  for (const intercept of DIRECT_COMMANDS) {
+    if (!intercept.pattern.test(message)) continue;
+
+    if (intercept.isRam) {
+      // RAM needs two commands
+      sendEvent('agent:tool', { name: 'run_command', input: { command: 'RAM total' } });
+      const totalResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2)' });
+      const freeResult  = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)' });
+      const total = totalResult.result?.trim() || '?';
+      const free  = freeResult.result?.trim()  || '?';
+      const reply = `You have ${total} GB of RAM total, with ${free} GB currently free.`;
+      sendEvent('agent:chunk', { role: 'assistant', text: reply });
+      sendEvent('agent:done', {});
+      return reply;
+    }
+
+    sendEvent('agent:tool', { name: intercept.tool, input: intercept.args });
+    const result = await executeTool(intercept.tool, intercept.args);
+    const reply = result.success
+      ? intercept.format(result.result)
+      : `Failed: ${result.result}`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+  } // end !isMultiPartQuery
+
+  // ── Direct intercept for GitHub repos ────────────────────────────────────
+  const githubRepoMatch = message.match(/\bgithub\b.*\b(repo|repository)\b.*\b([\w.-]+)\/([\w.-]+)\b|\b([\w.-]+)\/([\w.-]+)\b.*\bgithub\b/i);
+  if (githubRepoMatch) {
+    const repoStr = message.match(/\b([\w.-]+)\/([\w.-]+)\b/);
+    if (repoStr) {
+      const url = `https://github.com/${repoStr[1]}/${repoStr[2]}`;
+      sendEvent('agent:tool', { name: 'open_website', input: { url } });
+      await executeTool('open_website', { url });
+      const reply = `Opened ${url}`;
+      sendEvent('agent:chunk', { role: 'assistant', text: reply });
+      sendEvent('agent:done', {});
+      return reply;
+    }
+  }
+  // ── End direct intercepts ─────────────────────────────────────────────────
+
   const messages = historyToOpenAIMessages(chatHistory);
   messages.push({ role: 'user', content: message });
 
@@ -546,6 +735,16 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
 
     // Tool calls
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      // Safety cap: never run more than 2 tool rounds total
+      const toolRoundsRun = messages.filter(m => m.role === 'tool').length;
+      if (toolRoundsRun >= 2) {
+        const lastResult = messages.filter(m => m.role === 'tool').pop();
+        const reply = lastResult?.content || 'Done.';
+        sendEvent('agent:chunk', { role: 'assistant', text: reply });
+        sendEvent('agent:done', {});
+        return reply;
+      }
+
       for (const toolCall of assistantMsg.tool_calls) {
         if (abortFlag) break;
         const toolName = toolCall.function.name;
@@ -560,14 +759,20 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
         try {
           const result = await executeTool(toolName, toolArgs);
           if (result.isImage) {
-            // Groq can't process images — tell it the screenshot was taken
-            // and ask it to inform the user that vision is only available with Gemini
-            toolResultContent = 'Screenshot taken successfully. Note: image analysis requires Gemini provider. Please tell the user the screenshot was taken but you cannot describe it without Gemini — suggest switching to Gemini in Settings for vision capabilities.';
+            toolResultContent = 'Screenshot taken. Image analysis not available on Groq — use Gemini.';
           } else {
-            toolResultContent = result.result || 'Done.';
+            const raw = result.result || 'Done.';
+            toolResultContent = raw.length > 500 ? raw.substring(0, 500) + '...(truncated)' : raw;
           }
         } catch (err) {
           toolResultContent = `Error: ${err.message}`;
+        }
+
+        // For terminal tools: reply immediately and stop
+        if (TERMINAL_TOOLS.has(toolName)) {
+          sendEvent('agent:chunk', { role: 'assistant', text: toolResultContent });
+          sendEvent('agent:done', {});
+          return toolResultContent;
         }
 
         messages.push({
@@ -576,16 +781,16 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
           content: toolResultContent,
         });
       }
-      continue; // loop back with tool results
+      continue; // only reaches here for non-terminal tools (run_command, search_files, etc.)
     }
 
-    // Text response
+    // Text response — done, break immediately
     const text = assistantMsg.content;
     if (text) {
       fullResponse = text;
       sendEvent('agent:chunk', { role: 'assistant', text: fullResponse });
     }
-    break;
+    break; // always break on text — never loop after a final answer
   }
 
   if (abortFlag) {

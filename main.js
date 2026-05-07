@@ -335,7 +335,7 @@ ipcMain.handle('agent:run', async (event, message) => {
   } catch (err) {
     sendEvent('agent:error', { message: err.message });
   } finally {
-    agentRunning = false;
+    agentRunning = false; // always reset, even on unexpected throws
   }
 });
 

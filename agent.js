@@ -34,11 +34,13 @@ STRICT RULES — follow exactly:
 9. take_screenshot IS available — always use it when asked to see the screen.
 
 BROWSER TASKS — use run_task for anything involving a website:
-- "Send an email" → run_task("Go to Gmail, compose email to X with subject Y and body Z, then send")
-- "Schedule email" → run_task("Go to Gmail, compose email to X, click Schedule send, pick time T")
-- "Fill a form" → run_task("Go to <url>, fill in <field> with <value>, click submit")
 - "Search online" → run_task("Go to Google and search for X")
-- run_task connects to your real Chrome with all logins and cookies — it CAN access Gmail, Docs, etc.
+- run_task connects to your real Chrome with all logins and cookies
+
+EMAIL — use send_email tool (NOT run_task) for all email requests:
+- "Send an email" → send_email(to, subject, body)
+- "Schedule an email" → send_email(to, subject, body, scheduleTime="2:40 PM")
+- send_email uses Gmail SMTP — requires Gmail credentials in ⚙️ Settings
 
 POWERSHELL COMMANDS — use these exact strings:
 - Public IP: (Invoke-RestMethod https://api.ipify.org)
@@ -294,7 +296,7 @@ const GROQ_CORE_TOOLS = CORE_TOOLS.filter(t =>
 
 // Groq gets core tools by default; browser tools added only when user explicitly
 // wants AI browser automation (not just opening a URL with open_website)
-const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with|send.*email|compose.*email|gmail|google docs|google sheets|schedule.*send|fill.*form|submit.*form)\b/i;
+const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with|google docs|google sheets)\b/i;
 
 function getGroqTools(message) {
   const tools = [...GROQ_CORE_TOOLS];

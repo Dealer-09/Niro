@@ -78,78 +78,99 @@
     </div>
   </div>
 
-  <!-- Settings Modal -->
+  <!-- Settings Panel (slides in from right, full height) -->
   <div id="settings-overlay">
-    <div id="settings-modal">
-      <h2>⚙️ Settings</h2>
+    <div id="settings-panel">
 
-      <!-- Provider Selector -->
-      <div class="setting-group">
-        <label>Active AI Provider</label>
-        <div class="provider-tabs" id="provider-tabs">
-          <button class="provider-tab" data-provider="groq">⚡ Groq</button>
-          <button class="provider-tab" data-provider="gemini">✦ Gemini</button>
-        </div>
+      <!-- Settings Header -->
+      <div id="settings-header">
+        <span>⚙️ Settings</span>
+        <button id="settings-close-btn" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
       </div>
 
-      <!-- Groq section -->
-      <div id="section-groq" class="provider-section">
-        <div class="setting-group">
-          <label>Groq API Key <span class="hint">— console.groq.com</span></label>
-          <div class="key-input-row">
-            <input type="password" id="settings-groq-key" placeholder="gsk_...">
-            <button class="btn-add-key" id="btn-add-groq-key" title="Add backup key">+</button>
+      <!-- Settings Tabs -->
+      <div id="settings-tabs">
+        <button class="settings-tab active" data-tab="provider">AI Provider</button>
+        <button class="settings-tab" data-tab="email">Email</button>
+        <button class="settings-tab" data-tab="general">General</button>
+      </div>
+
+      <!-- Tab: AI Provider -->
+      <div class="settings-tab-content active" id="tab-provider">
+        <div class="field-row">
+          <label>Provider</label>
+          <div class="provider-tabs" id="provider-tabs">
+            <button class="provider-tab" data-provider="groq">⚡ Groq</button>
+            <button class="provider-tab" data-provider="gemini">✦ Gemini</button>
           </div>
-          <div id="groq-extra-keys" class="extra-keys-list"></div>
         </div>
-        <div class="local-hint">
-          <span>💡</span>
-          <span>Groq is free to start. Get your key at <strong>console.groq.com</strong>.<br>Also used for voice transcription (Whisper).</span>
-        </div>
-      </div>
 
-      <!-- Gemini section -->
-      <div id="section-gemini" class="provider-section hidden">
-        <div class="setting-group">
-          <label>Gemini API Key <span class="hint">— aistudio.google.com</span></label>
-          <div class="key-input-row">
-            <input type="password" id="settings-gemini-key" placeholder="AIza...">
-            <button class="btn-add-key" id="btn-add-gemini-key" title="Add backup key">+</button>
+        <!-- Groq -->
+        <div id="section-groq" class="provider-section">
+          <div class="field-row">
+            <label>Groq API Key <a class="field-link" href="#">console.groq.com</a></label>
+            <div class="key-input-row">
+              <input type="password" id="settings-groq-key" placeholder="gsk_...">
+              <button class="btn-add-key" id="btn-add-groq-key" title="Add backup key">+</button>
+            </div>
+            <div id="groq-extra-keys" class="extra-keys-list"></div>
           </div>
-          <div id="gemini-extra-keys" class="extra-keys-list"></div>
         </div>
-        <div class="local-hint">
-          <span>💡</span>
-          <span>Get your free key at <strong>aistudio.google.com</strong>.<br>Also used for AI browser automation.</span>
+
+        <!-- Gemini -->
+        <div id="section-gemini" class="provider-section hidden">
+          <div class="field-row">
+            <label>Gemini API Key <a class="field-link" href="#">aistudio.google.com</a></label>
+            <div class="key-input-row">
+              <input type="password" id="settings-gemini-key" placeholder="AIza...">
+              <button class="btn-add-key" id="btn-add-gemini-key" title="Add backup key">+</button>
+            </div>
+            <div id="gemini-extra-keys" class="extra-keys-list"></div>
+          </div>
+        </div>
+
+        <p class="settings-hint">Keys rotate automatically when daily quota is hit.</p>
+      </div>
+
+      <!-- Tab: Email -->
+      <div class="settings-tab-content" id="tab-email">
+        <div class="field-row">
+          <label>Gmail Address</label>
+          <input type="email" id="settings-gmail-user" placeholder="you@gmail.com">
+        </div>
+        <div class="field-row">
+          <label>App Password <a class="field-link" href="#">get one here</a></label>
+          <input type="password" id="settings-gmail-pass" placeholder="xxxx xxxx xxxx xxxx">
+        </div>
+        <p class="settings-hint">Use an App Password — not your Gmail password.<br>Enable 2FA first, then generate at myaccount.google.com/apppasswords</p>
+      </div>
+
+      <!-- Tab: General -->
+      <div class="settings-tab-content" id="tab-general">
+        <div class="field-row">
+          <label>Hover Delay (ms)</label>
+          <input type="text" id="settings-hover-delay" placeholder="800">
+        </div>
+        <div class="field-row">
+          <div class="toggle-row">
+            <label>Launch on Startup</label>
+            <button class="toggle-switch" id="settings-autostart"></button>
+          </div>
         </div>
       </div>
 
-      <!-- Common settings -->
-      <div class="setting-group">
-        <label>Email (Gmail SMTP) <span class="hint">— for send_email tool</span></label>
-        <input type="email" id="settings-gmail-user" placeholder="you@gmail.com">
-        <input type="password" id="settings-gmail-pass" placeholder="App Password (myaccount.google.com/apppasswords)" style="margin-top:6px;">
-        <div class="local-hint" style="margin-top:6px;">
-          <span>💡</span>
-          <span>Use an <strong>App Password</strong>, not your Gmail password.<br>Generate one at <strong>myaccount.google.com/apppasswords</strong></span>
-        </div>
-      </div>
-
-      <!-- Hover delay -->
-        <input type="text" id="settings-hover-delay" placeholder="800">
-      </div>
-      <div class="setting-group">
-        <div class="toggle-row">
-          <label style="margin-bottom: 0;">Launch on Startup</label>
-          <button class="toggle-switch" id="settings-autostart"></button>
-        </div>
-      </div>
-
-      <div class="settings-actions">
-        <button class="btn-danger" id="settings-quit">Quit Niro</button>
+      <!-- Settings Footer -->
+      <div id="settings-footer">
+        <button class="btn-danger" id="settings-quit">Quit</button>
         <button class="btn-secondary" id="settings-cancel">Cancel</button>
         <button class="btn-primary" id="settings-save">Save</button>
       </div>
+
     </div>
   </div>
 

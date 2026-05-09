@@ -41,9 +41,24 @@
   let activeProvider = 'groq';
   let currentStreamingMsg = null;
   let isRunning = false;
-  // In-memory extra keys (not yet saved)
   let pendingGroqKeys = [];
   let pendingGeminiKeys = [];
+
+  // ─────────────────────────────────────────────
+  // Settings tab switching
+  // ─────────────────────────────────────────────
+  document.getElementById('settings-tabs').addEventListener('click', (e) => {
+    const tab = e.target.closest('.settings-tab');
+    if (!tab) return;
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+  });
+
+  document.getElementById('settings-close-btn').addEventListener('click', () => {
+    settingsOverlay.classList.remove('visible');
+  });
 
   // ─────────────────────────────────────────────
   // Panel Visibility
@@ -349,7 +364,7 @@
   btnClose.addEventListener('click', () => window.niro.hidePanel());
 
   // ─────────────────────────────────────────────
-  // Provider tab toggle (Settings modal)
+  // Provider tab toggle (inside Settings)
   // ─────────────────────────────────────────────
   providerTabs.addEventListener('click', (e) => {
     const tab = e.target.closest('.provider-tab');
@@ -434,7 +449,6 @@
   // ─────────────────────────────────────────────
   btnSettings.addEventListener('click', async () => {
     try {
-      document.body.style.overflow = 'auto'; // allow scrolling for settings
       const [settings, providerCfg, gmailCfg] = await Promise.all([
         window.niro.getSettings(),
         window.niro.getProviderConfig(),
@@ -483,12 +497,16 @@
 
   settingsAutostart.addEventListener('click', () => settingsAutostart.classList.toggle('on'));
 
-  settingsCancel.addEventListener('click', () => settingsOverlay.classList.remove('visible'));
+  settingsCancel.addEventListener('click', () => {
+    settingsOverlay.classList.remove('visible');
+  });
 
   settingsQuit.addEventListener('click', () => window.niro.quitApp());
 
   settingsOverlay.addEventListener('click', (e) => {
-    if (e.target === settingsOverlay) settingsOverlay.classList.remove('visible');
+    if (e.target === settingsOverlay) {
+      settingsOverlay.classList.remove('visible');
+    }
   });
 
   settingsSave.addEventListener('click', async () => {

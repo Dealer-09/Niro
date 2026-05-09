@@ -19,6 +19,8 @@ app.commandLine.appendSwitch('metrics-recording-only');
 app.commandLine.appendSwitch('no-first-run');
 app.commandLine.appendSwitch('safebrowsing-disable-auto-update');
 app.commandLine.appendSwitch('disable-component-update');
+// Disable GPU cache to avoid permission errors in development
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 
 // Load .env if present (optional — app works entirely from user-supplied keys in Settings)
 dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), '.env') });
@@ -43,6 +45,8 @@ const store = new Store({
     // Extra API keys for fallback when daily quota is hit
     groqApiKeys: [],    // array of additional Groq keys
     geminiApiKeys: [],  // array of additional Gemini keys
+    gmailUser: '',
+    gmailAppPassword: '',
     tasks: [
       { id: '1', name: 'Chrome',      icon: '🌐', instruction: 'Open Google Chrome' },
       { id: '2', name: 'Notepad',     icon: '📝', instruction: 'Open Notepad' },
@@ -464,6 +468,25 @@ ipcMain.handle('chat:clear', () => {
 // ─────────────────────────────────────────────────
 // IPC: Audio Transcription (Groq Whisper)
 // Always uses the user's Groq API key — never a hardcoded key
+// ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────
+// IPC: Gmail Credentials
+// ─────────────────────────────────────────────────
+ipcMain.handle('settings:getGmail', () => {
+  return {
+    gmailUser: store.get('gmailUser') || '',
+    gmailAppPassword: _maskKey(store.get('gmailAppPassword') || ''),
+  };
+});
+
+ipcMain.handle('settings:setGmail', (event, { gmailUser, gmailAppPassword }) => {
+  if (gmailUser !== undefined) store.set('gmailUser', gmailUser.trim());
+  if (gmailAppPassword && gmailAppPassword.trim()) store.set('gmailAppPassword', gmailAppPassword.trim());
+  return true;
+});
+
+// ─────────────────────────────────────────────────
+// IPC: Audio Transcription (Groq Whisper)
 // ─────────────────────────────────────────────────
 ipcMain.handle('audio:transcribe', async (event, buffer) => {
   try {

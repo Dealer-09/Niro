@@ -23,6 +23,8 @@
   const settingsOverlay  = document.getElementById('settings-overlay');
   const settingsGroqKey  = document.getElementById('settings-groq-key');
   const settingsGeminiKey= document.getElementById('settings-gemini-key');
+  const settingsGmailUser= document.getElementById('settings-gmail-user');
+  const settingsGmailPass= document.getElementById('settings-gmail-pass');
   const settingsHoverDelay = document.getElementById('settings-hover-delay');
   const settingsAutostart  = document.getElementById('settings-autostart');
   const settingsSave     = document.getElementById('settings-save');
@@ -432,9 +434,11 @@
   // ─────────────────────────────────────────────
   btnSettings.addEventListener('click', async () => {
     try {
-      const [settings, providerCfg] = await Promise.all([
+      document.body.style.overflow = 'auto'; // allow scrolling for settings
+      const [settings, providerCfg, gmailCfg] = await Promise.all([
         window.niro.getSettings(),
         window.niro.getProviderConfig(),
+        window.niro.getGmail(),
       ]);
 
       // Set active provider tab
@@ -466,6 +470,11 @@
       settingsHoverDelay.value = settings.hoverDelay || 800;
       settingsAutostart.classList.toggle('on', !!settings.autoStart);
 
+      // Gmail
+      settingsGmailUser.value = gmailCfg.gmailUser || '';
+      settingsGmailPass.value = '';
+      settingsGmailPass.placeholder = gmailCfg.gmailAppPassword || 'App Password...';
+
       settingsOverlay.classList.add('visible');
     } catch (err) {
       addMessage('error', 'Failed to load settings: ' + err.message);
@@ -495,6 +504,13 @@
         groqApiKeys:   pendingGroqKeys.length > 0 ? pendingGroqKeys : undefined,
         geminiApiKeys: pendingGeminiKeys.length > 0 ? pendingGeminiKeys : undefined,
       });
+
+      // Save Gmail credentials
+      const gmailUser = settingsGmailUser.value.trim();
+      const gmailPass = settingsGmailPass.value.trim();
+      if (gmailUser || gmailPass) {
+        await window.niro.setGmail({ gmailUser, gmailAppPassword: gmailPass || undefined });
+      }
 
       // Save hover delay
       const delay = parseInt(settingsHoverDelay.value) || 800;

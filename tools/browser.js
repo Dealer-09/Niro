@@ -28,7 +28,13 @@ You see the page via a screenshot and a simplified DOM tree.
 Actions: click(selector), type(selector, text), scroll(direction: up|down),
 navigate(url), wait(ms), finish(answer), fail(reason).
 
-Respond ONLY as JSON: { "thought": "...", "action": "...", "params": { ... } }
+Guidelines:
+- For Gmail: navigate to https://mail.google.com first if not already there
+- To compose: click the "Compose" button (look for text "Compose" or pencil icon)
+- To schedule send in Gmail: click the arrow next to Send button, select "Schedule send"
+- Use wait(2000) after clicking buttons to let Gmail's UI load
+- If a selector fails, try clicking by text instead
+- Respond ONLY as JSON: { "thought": "...", "action": "...", "params": { ... } }
 `;
 
 // ─── Lazy init: connect to Chrome CDP only when first needed ─────────────────
@@ -83,7 +89,7 @@ export async function runTask(task, onProgress = null) {
   const page = await getCDPPage();
 
   let iterations = 0;
-  const maxIterations = 15;
+  const maxIterations = 25; // increased for complex multi-step tasks like Gmail compose+schedule
 
   if (onProgress) onProgress(`Starting task: ${task}`);
 

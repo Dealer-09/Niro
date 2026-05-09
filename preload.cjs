@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld('niro', {
   onPanelHide:    (cb) => _on('panel:doHide',      cb),
   onTaskRun:      (cb) => _on('tasks:runInstruction', cb),
 
+  // ── Gmail credentials ──────────────────────────────────────────────────────
+  getGmail:    ()     => ipcRenderer.invoke('settings:getGmail'),
+  setGmail:    (args) => ipcRenderer.invoke('settings:setGmail', args),
+
   // ── Cleanup ────────────────────────────────────────────────────────────────
   cleanup: () => {
     for (const { channel, wrapped } of _listeners) {

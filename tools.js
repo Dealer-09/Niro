@@ -544,11 +544,97 @@ async function search_files({ query, directory }) {
 // ─────────────────────────────────────────────────
 async function run_task({ task }) {
   try {
-    // ensureReady() handles lazy init — no need to check isReady() first
     const result = await browserBridge.runTask(task);
     return { success: true, result: result || 'Browser task completed.' };
   } catch (err) {
-    return { success: false, result: `Browser task failed: ${err.message}` };
+    // Surface the actual error reason, not a generic message
+    const msg = err.message || 'Unknown browser error';
+    console.error('[Niro] run_task failed:', msg);
+    return { success: false, result: `Browser task failed: ${msg}` };
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Tool: send_email — Send email via Gmail SMTP
+// Requires Gmail address + App Password stored in settings
+// ─────────────────────────────────────────────────
+async function send_email({ to, subject, body, scheduleTime }) {
+  try {
+    const gmailUser = store?.get('gmailUser') || '';
+    const gmailPass = store?.get('gmailAppPassword') || '';
+
+    if (!gmailUser || !gmailPass) {
+      return {
+        success: false,
+        result: 'Gmail not configured. Open ⚙️ Settings → Email tab and add your Gmail address and App Password. Get an App Password at myaccount.google.com/apppasswords'
+      };
+    }
+
+    // If scheduleTime is provided, use set_timer to delay the send
+    if (scheduleTime) {
+      // Parse scheduleTime like "8:25 AM", "14:30", "1:47 PM"
+      const now = new Date();
+      let targetTime = null;
+
+      const timeMatch = scheduleTime.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[1]);
+        const mins = parseInt(timeMatch[2]);
+        const ampm = timeMatch[3]?.toUpperCase();
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+        targetTime = new Date(now);
+        targetTime.setHours(hours, mins, 0, 0);
+        if (targetTime <= now) targetTime.setDate(targetTime.getDate() + 1); // next day if past
+      }
+
+      if (targetTime) {
+        const delayMs = targetTime - now;
+        const delayMins = delayMs / (1000 * 60);
+        const id = `email_${Date.now()}`;
+        const timeout = setTimeout(async () => {
+          await send_email({ to, subject, body }); // send without scheduleTime
+          const notif = new Notification({
+            title: '📧 Email Sent!',
+            body: `Scheduled email to ${to} has been sent.`,
+            icon: getIconPath(),
+          });
+          notif.show();
+        }, delayMs);
+        activeTimers.set(id, { timeout, label: `Email to ${to}`, endsAt: Date.now() + delayMs });
+        return {
+          success: true,
+          result: `Email scheduled to ${to} at ${scheduleTime} (in ${Math.round(delayMins)} minutes). You'll get a notification when it's sent.`
+        };
+      }
+    }
+
+    // Send immediately via PowerShell + Gmail SMTP
+    const safeUser = gmailUser.replace(/'/g, "''");
+    const safePass = gmailPass.replace(/'/g, "''");
+    const safeTo = to.replace(/'/g, "''");
+    const safeSubject = subject.replace(/'/g, "''");
+    const safeBody = body.replace(/'/g, "''").replace(/\n/g, '`n');
+
+    const cmd = `
+$pass = ConvertTo-SecureString '${safePass}' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential('${safeUser}', $pass)
+Send-MailMessage -From '${safeUser}' -To '${safeTo}' -Subject '${safeSubject}' -Body '${safeBody}' -SmtpServer 'smtp.gmail.com' -Port 587 -UseSsl -Credential $cred
+Write-Output 'Email sent successfully'`;
+
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
+    const { stdout, stderr } = await execAsync(
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
+      { timeout: 30000 }
+    );
+
+    if (stderr && stderr.includes('Error')) {
+      return { success: false, result: `Email failed: ${stderr.trim()}` };
+    }
+
+    return { success: true, result: `Email sent to ${to} with subject "${subject}"` };
+  } catch (err) {
+    return { success: false, result: `Email failed: ${err.message}` };
   }
 }
 
@@ -566,15 +652,13 @@ const TOOL_MAP = {
   take_screenshot,
   show_notification,
   save_task,
-  // AI-powered Browser Use (real Chrome + Gemini)
+  send_email,
   run_task,
-  // Legacy Playwright browser automation (headless fallback)
   browser_open,
   browser_click,
   browser_type,
   browser_read,
   browser_close,
-  // Windows automation
   list_windows,
   focus_window,
   close_app,

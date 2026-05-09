@@ -535,32 +535,23 @@ html, body {
 #settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.92);
   display: none;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   z-index: 1000;
-  animation: fade-in 0.2s ease;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 #settings-overlay.visible {
   display: flex;
 }
 
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 #settings-modal {
-  width: 320px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius);
-  padding: 20px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
-  animation: modal-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  width: 100%;
+  flex-shrink: 0;
+  background: transparent;
+  padding: 16px 16px 24px;
 }
 
 @keyframes modal-in {

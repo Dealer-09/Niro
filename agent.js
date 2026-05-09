@@ -187,6 +187,20 @@ const CORE_TOOLS = [
     },
   },
   {
+    name: 'send_email',
+    description: 'Send an email via Gmail SMTP. Can send immediately or schedule for a specific time. Requires Gmail credentials in Settings.',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient email address' },
+        subject: { type: 'string', description: 'Email subject' },
+        body: { type: 'string', description: 'Email body text' },
+        scheduleTime: { type: 'string', description: 'Optional: time to send e.g. "8:25 AM", "14:30". Omit to send immediately.' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
     name: 'press_key',
     description: 'Press a key or shortcut. Examples: enter, ctrl+c, alt+tab.',
     parameters: {

@@ -477,7 +477,14 @@ export async function runAgent(message, chatHistory, sendEvent) {
     }
   } catch (err) {
     console.error('[Niro] Agent error:', err);
-    sendEvent('agent:error', { message: err.message || 'Unknown error occurred' });
+    const msg = err.message || '';
+    // Surface daily quota limit clearly
+    if ((msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) && msg.includes('PerDay')) {
+      const userMsg = `⚠️ Daily request limit reached (20 requests/day on Gemini free tier).\n\nQuota resets at midnight Pacific Time. Switch to Groq in ⚙️ Settings to continue using Niro now.`;
+      sendEvent('agent:error', { message: userMsg });
+    } else {
+      sendEvent('agent:error', { message: msg || 'Unknown error occurred' });
+    }
     return null;
   }
 }
@@ -525,6 +532,27 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
         const delayMatch = msg.match(/retry[^\d]*(\d+(?:\.\d+)?)\s*s/i);
         const waitMs = delayMatch ? Math.ceil(parseFloat(delayMatch[1])) * 1000 : 40000;
         const waitSec = Math.ceil(waitMs / 1000);
+
+        // Check if it's a daily quota (RPD) vs per-minute (RPM)
+        const isDailyLimit = msg.includes('PerDay') || msg.includes('per_day') || msg.includes('GenerateRequestsPerDay');
+        let userMsg;
+        if (isDailyLimit) {
+          // Daily quota — resets at midnight Pacific
+          const now = new Date();
+          const ptOffset = -7 * 60; // PDT (UTC-7), adjust for PST (-8) in winter
+          const ptNow = new Date(now.getTime() + (now.getTimezoneOffset() + ptOffset) * 60000);
+          const midnight = new Date(ptNow);
+          midnight.setHours(24, 0, 0, 0);
+          const msUntilMidnight = midnight - ptNow;
+          const hoursLeft = Math.ceil(msUntilMidnight / (1000 * 60 * 60));
+          const minutesLeft = Math.ceil((msUntilMidnight % (1000 * 60 * 60)) / (1000 * 60));
+          userMsg = `⚠️ Daily request limit reached (20 requests/day on free tier).\n\nYou can send new requests in approximately ${hoursLeft > 0 ? `${hoursLeft}h ${minutesLeft}m` : `${minutesLeft} minutes`} when the quota resets at midnight Pacific Time.\n\nTip: Switch to Groq in ⚙️ Settings for unlimited requests on common tasks.`;
+          sendEvent('agent:chunk', { role: 'assistant', text: userMsg });
+          sendEvent('agent:done', {});
+          return userMsg;
+        }
+
+        // Per-minute rate limit — just wait and retry
         sendEvent('agent:chunk', { role: 'assistant', text: `⏳ Rate limit hit, retrying in ${waitSec}s...` });
         await new Promise(r => setTimeout(r, waitMs));
         if (abortFlag) break;

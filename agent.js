@@ -21,11 +21,22 @@ const PROVIDER_DEFAULTS = {
 const SYSTEM_PROMPT = `You are Niro, a Windows desktop AI assistant.
 
 STRICT RULES — follow exactly:
-1. Use tools to complete tasks. Never just describe what to do.
+1. Use tools to complete tasks. Never just describe what to do. Never say "I cannot".
 2. After a tool returns a result, give the user the answer as text. STOP. Do not call more tools.
 3. NEVER call show_notification unless the user explicitly says "notify me" or "show a notification".
-4. Use open_app for apps, open_website for URLs, run_command for system info, set_timer for timers.
-5. One tool call per turn unless the task genuinely requires chaining (e.g. open app THEN type).
+4. Use open_app for apps, open_website for simple URLs, run_command for system info, set_timer for timers.
+5. Use run_task for ANY web interaction — Gmail, forms, clicking buttons, filling fields, scheduling.
+6. One tool call per turn unless the task genuinely requires chaining (e.g. open app THEN notify).
+7. You CAN answer general knowledge questions (dates, math, facts) WITHOUT using any tool.
+8. list_windows IS available — always use it when asked about open windows.
+9. take_screenshot IS available — always use it when asked to see the screen.
+
+BROWSER TASKS — use run_task for anything involving a website:
+- "Send an email" → run_task("Go to Gmail, compose email to X with subject Y and body Z, then send")
+- "Schedule email" → run_task("Go to Gmail, compose email to X, click Schedule send, pick time T")
+- "Fill a form" → run_task("Go to <url>, fill in <field> with <value>, click submit")
+- "Search online" → run_task("Go to Google and search for X")
+- run_task connects to your real Chrome with all logins and cookies — it CAN access Gmail, Docs, etc.
 
 POWERSHELL COMMANDS — use these exact strings:
 - Public IP: (Invoke-RestMethod https://api.ipify.org)
@@ -33,22 +44,22 @@ POWERSHELL COMMANDS — use these exact strings:
 - RAM free GB: [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)
 - Disk C free GB: [math]::Round((Get-PSDrive C).Free/1GB,1)
 - Disk C total GB: [math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)
-- CPU: (Get-WmiObject Win32_Processor).Name
+- CPU name: (Get-WmiObject Win32_Processor).Name
+- CPU cores: (Get-WmiObject Win32_Processor).NumberOfCores
 - PC name: $env:COMPUTERNAME
 - Windows ver: (Get-WmiObject Win32_OperatingSystem).Caption
-- Top processes: Get-Process | Sort-Object CPU -Desc | Select-Object -First 10 Name,CPU | Format-Table -Auto
-
-For RAM: run TWO separate run_command calls (one for total, one for free), then combine in your answer.
+- Uptime hours: [math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)
+- Top processes CPU: Get-Process | Sort-Object CPU -Desc | Select-Object -First 10 Name,@{N='CPU(s)';E={[math]::Round($_.CPU,1)}} | Format-Table -Auto | Out-String -Width 200
+- Top processes RAM: Get-Process | Sort-Object WorkingSet -Desc | Select-Object -First 10 Name,@{N='RAM(MB)';E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -Auto | Out-String -Width 200
+- List windows: Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object ProcessName,MainWindowTitle | Format-Table -Auto | Out-String -Width 200
 
 URL rules:
 - YouTube channel @name: https://www.youtube.com/@<name>
 - YouTube search: https://www.youtube.com/results?search_query=<query>
 - Google search: https://www.google.com/search?q=<query>
 - GitHub repo: https://github.com/<owner>/<repo>
-- GitHub user: https://github.com/<username>
 - Wikipedia: https://en.wikipedia.org/wiki/<topic>
-- Reddit: https://www.reddit.com/r/<subreddit>
-- Always use open_website for any URL — never use open_app for websites
+- Always use open_website for simple URL opening, run_task for web interactions
 
 You are on Windows.`;
 
@@ -267,7 +278,7 @@ const GROQ_CORE_TOOLS = CORE_TOOLS.filter(t =>
 
 // Groq gets core tools by default; browser tools added only when user explicitly
 // wants AI browser automation (not just opening a URL with open_website)
-const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with)\b/i;
+const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with|send.*email|compose.*email|gmail|google docs|google sheets|schedule.*send|fill.*form|submit.*form)\b/i;
 
 function getGroqTools(message) {
   const tools = [...GROQ_CORE_TOOLS];
@@ -554,18 +565,19 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
         }
 
         if (result.isImage && result.result) {
-          // Screenshot: send functionResponse + the actual image inline so Gemini can see it
+          // Screenshot: send functionResponse first, then image as a new user turn
+          // gemini-2.5-flash-lite handles image in a separate content part better
           responseParts.push({
             functionResponse: {
               name: toolName,
-              response: { output: 'Screenshot captured. Describe what you see in the image below.' },
+              response: { output: 'Screenshot captured successfully. The image is attached below — describe what you see.' },
             },
           });
-          // Append the image as a separate inlineData part so the model can actually see it
+          // Add image as inline data alongside the function response
           responseParts.push({
             inlineData: {
               mimeType: 'image/png',
-              data: result.result, // base64 string
+              data: result.result,
             },
           });
         } else {
@@ -609,7 +621,9 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
   }
 
   // ── Direct intercept: explicit notification requests ─────────────────────
-  const notifMatch = /\b(show|send|display|give me|pop up)\b.*\bnotification\b|\bnotif(y|ication)\b.*\bsaying\b/i.test(message);
+  // Only fire if NOT a timer request (timer + notification is handled by set_timer)
+  const isTimerRequest = /\b(set|start|create)\b.*\btimer\b|\btimer\b.*\b(for|of)\b/i.test(message);
+  const notifMatch = !isTimerRequest && /\b(show|send|display|give me|pop up)\b.*\bnotification\b|\bnotif(y|ication)\b.*\bsaying\b/i.test(message);
   if (notifMatch) {
     // Extract the message text — look for quoted string or "saying X"
     const quotedMatch = message.match(/["']([^"']+)["']/);
@@ -624,10 +638,43 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
     return reply;
   }
 
+  // ── Direct intercept: multi-part system info ─────────────────────────────
+  // Handle "IP + computer name + Windows version all in one" type queries
+  const wantsIp   = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
+  const wantsName = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
+  const wantsWin  = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
+  const wantsCpu  = /\b(cpu|processor)\b/i.test(message);
+  const wantsRam  = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+
+  const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam].filter(Boolean).length;
+  if (multiInfoCount >= 2) {
+    const parts = [];
+    const cmds = [];
+    if (wantsIp)   cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)');
+    if (wantsName) cmds.push('$name=$env:COMPUTERNAME');
+    if (wantsWin)  cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption');
+    if (wantsCpu)  cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name');
+    if (wantsRam)  cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)');
+
+    const outputParts = [];
+    if (wantsIp)   outputParts.push('"IP: " + $ip');
+    if (wantsName) outputParts.push('"Computer: " + $name');
+    if (wantsWin)  outputParts.push('"OS: " + $win');
+    if (wantsCpu)  outputParts.push('"CPU: " + $cpu');
+    if (wantsRam)  outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"');
+
+    const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
+    sendEvent('agent:tool', { name: 'run_command', input: { command: 'system info' } });
+    const result = await executeTool('run_command', { command: cmd });
+    const reply = result.success ? result.result.trim() : `Failed: ${result.result}`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
   // ── Direct intercepts for common system info queries ──────────────────────
-  // Skip intercepts for multi-part queries — let the LLM handle those
-  const isMultiPartQuery = /\band\b.*\band\b|,.*,|all in one|together|combined|both|multiple/i.test(message)
-    || (message.match(/\band\b/g) || []).length >= 2;
+  // Skip intercepts for very complex multi-part queries beyond system info
+  const isMultiPartQuery = (message.match(/\band\b/g) || []).length >= 3;
 
   if (!isMultiPartQuery) {
 

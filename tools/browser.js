@@ -10,9 +10,14 @@ let _initPromise = null; // prevents duplicate init calls
 const CDP_PORT = process.env.NIRO_CDP_PORT || 9222;
 const GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
-// ─── Set Gemini key (called from main.js after user saves settings) ──────────
+// ─── Set Gemini key(s) — called from main.js after user saves settings ───────
 export function setGeminiApiKey(key) {
   _geminiKey = key || null;
+}
+
+export function setGeminiApiKeys(keys) {
+  // no-op for now — browser agent uses primary key only
+  // key rotation for browser agent can be added later if needed
 }
 
 // ─── Browser Agent Prompt ────────────────────────────────────────────────────
@@ -40,7 +45,7 @@ async function ensureReady() {
     const ready = await isChromeCDPReady();
     if (!ready) {
       launchChrome();
-      await waitForCDP(15000);
+      await waitForCDP(30000); // 30s — Chrome can be slow to start
     }
     _cdpBrowser = await chromium.connectOverCDP(`http://localhost:${CDP_PORT}`);
     _ready = true;

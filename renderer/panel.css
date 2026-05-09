@@ -770,6 +770,96 @@ html, body {
 }
 
 /* ─────────────────────────────────────────────── */
+/* EXTRA API KEYS                                   */
+/* ─────────────────────────────────────────────── */
+.key-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.key-input-row input {
+  flex: 1;
+}
+
+.btn-add-key {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: var(--radius-xs);
+  font-size: 18px;
+  font-weight: 300;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  line-height: 1;
+}
+
+.btn-add-key:hover {
+  background: var(--accent);
+  color: #000;
+}
+
+.extra-keys-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.extra-key-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.extra-key-item .key-label {
+  flex: 1;
+  font-family: 'Consolas', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extra-key-item .key-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+
+.extra-key-item .key-remove:hover {
+  background: var(--red);
+  color: white;
+}
+
+.extra-keys-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+/* ─────────────────────────────────────────────── */
 /* PROVIDER TABS                                    */
 /* ─────────────────────────────────────────────── */
 .provider-tabs {

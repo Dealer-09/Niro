@@ -7,9 +7,11 @@ import path from 'path';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let llmClient = null;
-let currentProvider = 'groq'; // default: groq
+let currentProvider = 'groq';
 let currentModel = null;
 let abortFlag = false;
+let _allApiKeys = [];      // full key pool for rotation
+let _currentKeyIndex = 0;  // which key we're currently using
 
 // ─── Model defaults ───────────────────────────────────────────────────────────
 const PROVIDER_DEFAULTS = {
@@ -351,7 +353,7 @@ const TERMINAL_TOOLS = new Set([
  * @param {string} opts.apiKey  — user's own API key
  * @param {string} [opts.model] — optional model override
  */
-export function initClient({ provider = 'groq', apiKey, model } = {}) {
+export function initClient({ provider = 'groq', apiKey, model, allKeys = [] } = {}) {
   if (!apiKey || !apiKey.trim()) {
     console.warn('[Niro] No API key provided — agent will not run until a key is set in Settings.');
     llmClient = null;
@@ -360,13 +362,15 @@ export function initClient({ provider = 'groq', apiKey, model } = {}) {
 
   try {
     currentProvider = provider;
+    // Store full key pool for rotation (primary key first, then extras)
+    _allApiKeys = [apiKey.trim(), ...allKeys.filter(k => k && k.trim() !== apiKey.trim()).map(k => k.trim())];
+    _currentKeyIndex = 0;
 
     if (provider === 'gemini') {
       currentModel = model || PROVIDER_DEFAULTS.gemini.model;
       llmClient = new GoogleGenAI({ apiKey: apiKey.trim() });
-      console.log(`[Niro] Gemini client initialized (model: ${currentModel})`);
+      console.log(`[Niro] Gemini client initialized (model: ${currentModel}, keys: ${_allApiKeys.length})`);
     } else {
-      // Groq uses OpenAI-compatible REST — no SDK needed, plain fetch
       currentModel = model || PROVIDER_DEFAULTS.groq.model;
       llmClient = {
         provider: 'groq',
@@ -374,7 +378,7 @@ export function initClient({ provider = 'groq', apiKey, model } = {}) {
         baseURL: PROVIDER_DEFAULTS.groq.baseURL,
         model: currentModel,
       };
-      console.log(`[Niro] Groq client initialized (model: ${currentModel})`);
+      console.log(`[Niro] Groq client initialized (model: ${currentModel}, keys: ${_allApiKeys.length})`);
     }
 
     return true;
@@ -383,6 +387,21 @@ export function initClient({ provider = 'groq', apiKey, model } = {}) {
     llmClient = null;
     return false;
   }
+}
+
+// ─── Key rotation ─────────────────────────────────────────────────────────────
+function rotateToNextKey() {
+  if (_allApiKeys.length <= 1) return false; // no more keys to try
+  _currentKeyIndex = (_currentKeyIndex + 1) % _allApiKeys.length;
+  const nextKey = _allApiKeys[_currentKeyIndex];
+  console.log(`[Niro] Rotating to key ${_currentKeyIndex + 1}/${_allApiKeys.length}`);
+
+  if (currentProvider === 'gemini') {
+    llmClient = new GoogleGenAI({ apiKey: nextKey });
+  } else {
+    llmClient.apiKey = nextKey;
+  }
+  return true;
 }
 
 // ─── Stop agent ───────────────────────────────────────────────────────────────
@@ -480,7 +499,7 @@ export async function runAgent(message, chatHistory, sendEvent) {
     const msg = err.message || '';
     // Surface daily quota limit clearly
     if ((msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) && msg.includes('PerDay')) {
-      const userMsg = `⚠️ Daily request limit reached (20 requests/day on Gemini free tier).\n\nQuota resets at midnight Pacific Time. Switch to Groq in ⚙️ Settings to continue using Niro now.`;
+      const userMsg = `⚠️ All API keys have reached their daily limit.\n\nAdd more keys in ⚙️ Settings (tap + beside the key field) or switch to Groq to continue now.`;
       sendEvent('agent:error', { message: userMsg });
     } else {
       sendEvent('agent:error', { message: msg || 'Unknown error occurred' });
@@ -537,16 +556,22 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
         const isDailyLimit = msg.includes('PerDay') || msg.includes('per_day') || msg.includes('GenerateRequestsPerDay');
         let userMsg;
         if (isDailyLimit) {
-          // Daily quota — resets at midnight Pacific
+          // Try rotating to next key first
+          if (rotateToNextKey()) {
+            sendEvent('agent:chunk', { role: 'assistant', text: `⏳ Key quota reached, switching to backup key...` });
+            // Retry with new key — rebuild chat session
+            return await runGeminiAgent(message, chatHistory, sendEvent);
+          }
+          // All keys exhausted
           const now = new Date();
-          const ptOffset = -7 * 60; // PDT (UTC-7), adjust for PST (-8) in winter
+          const ptOffset = -7 * 60;
           const ptNow = new Date(now.getTime() + (now.getTimezoneOffset() + ptOffset) * 60000);
           const midnight = new Date(ptNow);
           midnight.setHours(24, 0, 0, 0);
           const msUntilMidnight = midnight - ptNow;
           const hoursLeft = Math.ceil(msUntilMidnight / (1000 * 60 * 60));
           const minutesLeft = Math.ceil((msUntilMidnight % (1000 * 60 * 60)) / (1000 * 60));
-          userMsg = `⚠️ Daily request limit reached (20 requests/day on free tier).\n\nYou can send new requests in approximately ${hoursLeft > 0 ? `${hoursLeft}h ${minutesLeft}m` : `${minutesLeft} minutes`} when the quota resets at midnight Pacific Time.\n\nTip: Switch to Groq in ⚙️ Settings for unlimited requests on common tasks.`;
+          userMsg = `⚠️ All Gemini API keys have reached their daily limit (20 requests/day each).\n\nQuota resets in ~${hoursLeft > 0 ? `${hoursLeft}h ${minutesLeft}m` : `${minutesLeft} minutes`} at midnight Pacific Time.\n\n💡 Add more API keys in ⚙️ Settings → Gemini section → tap + to add backup keys.\nOr switch to Groq in ⚙️ Settings to continue now.`;
           sendEvent('agent:chunk', { role: 'assistant', text: userMsg });
           sendEvent('agent:done', {});
           return userMsg;
@@ -668,28 +693,25 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
 
   // ── Direct intercept: multi-part system info ─────────────────────────────
   // Handle "IP + computer name + Windows version all in one" type queries
-  const wantsIp   = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
-  const wantsName = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
-  const wantsWin  = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
-  const wantsCpu  = /\b(cpu|processor)\b/i.test(message);
-  const wantsRam  = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+  const wantsIp     = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
+  const wantsName   = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
+  const wantsWin    = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
+  const wantsCpu    = /\b(cpu|processor)\b/i.test(message);
+  const wantsRam    = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+  const wantsDisk   = /\b(disk|drive|storage|space)\b/i.test(message);
+  const wantsUptime = /\buptime\b/i.test(message);
 
-  const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam].filter(Boolean).length;
+  const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam, wantsDisk, wantsUptime].filter(Boolean).length;
   if (multiInfoCount >= 2) {
-    const parts = [];
     const cmds = [];
-    if (wantsIp)   cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)');
-    if (wantsName) cmds.push('$name=$env:COMPUTERNAME');
-    if (wantsWin)  cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption');
-    if (wantsCpu)  cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name');
-    if (wantsRam)  cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)');
-
     const outputParts = [];
-    if (wantsIp)   outputParts.push('"IP: " + $ip');
-    if (wantsName) outputParts.push('"Computer: " + $name');
-    if (wantsWin)  outputParts.push('"OS: " + $win');
-    if (wantsCpu)  outputParts.push('"CPU: " + $cpu');
-    if (wantsRam)  outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"');
+    if (wantsIp)     { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
+    if (wantsName)   { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
+    if (wantsWin)    { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
+    if (wantsCpu)    { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name'); outputParts.push('"CPU: " + $cpu'); }
+    if (wantsRam)    { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
+    if (wantsDisk)   { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
+    if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
 
     const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
     sendEvent('agent:tool', { name: 'run_command', input: { command: 'system info' } });

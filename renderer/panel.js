@@ -31,10 +31,17 @@
   const sectionGroq      = document.getElementById('section-groq');
   const sectionGemini    = document.getElementById('section-gemini');
   const providerTabs     = document.getElementById('provider-tabs');
+  const btnAddGroqKey    = document.getElementById('btn-add-groq-key');
+  const btnAddGeminiKey  = document.getElementById('btn-add-gemini-key');
+  const groqExtraKeys    = document.getElementById('groq-extra-keys');
+  const geminiExtraKeys  = document.getElementById('gemini-extra-keys');
 
   let activeProvider = 'groq';
   let currentStreamingMsg = null;
   let isRunning = false;
+  // In-memory extra keys (not yet saved)
+  let pendingGroqKeys = [];
+  let pendingGeminiKeys = [];
 
   // ─────────────────────────────────────────────
   // Panel Visibility
@@ -353,6 +360,74 @@
   });
 
   // ─────────────────────────────────────────────
+  // Extra API Keys UI
+  // ─────────────────────────────────────────────
+  function renderExtraKeys(container, keys, onRemove) {
+    container.innerHTML = '';
+    if (keys.length === 0) return;
+    const label = document.createElement('div');
+    label.className = 'extra-keys-label';
+    label.textContent = `${keys.length} backup key${keys.length > 1 ? 's' : ''} — agent rotates on quota limit`;
+    container.appendChild(label);
+    keys.forEach((key, i) => {
+      const item = document.createElement('div');
+      item.className = 'extra-key-item';
+      const lbl = document.createElement('span');
+      lbl.className = 'key-label';
+      lbl.textContent = key; // already masked from backend
+      const rm = document.createElement('button');
+      rm.className = 'key-remove';
+      rm.textContent = '✕';
+      rm.title = 'Remove key';
+      rm.addEventListener('click', () => onRemove(i));
+      item.appendChild(lbl);
+      item.appendChild(rm);
+      container.appendChild(item);
+    });
+  }
+
+  function promptAddKey(placeholder, onAdd) {
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = placeholder;
+    input.style.cssText = 'width:100%;padding:6px 10px;background:var(--bg-input);border:1px solid var(--accent);border-radius:var(--radius-xs);color:var(--text-primary);font-size:12px;outline:none;margin-top:4px;';
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { onAdd(input.value.trim()); input.remove(); }
+      if (e.key === 'Escape') input.remove();
+    });
+    input.addEventListener('blur', () => { if (input.value.trim()) onAdd(input.value.trim()); input.remove(); });
+    return input;
+  }
+
+  btnAddGroqKey.addEventListener('click', () => {
+    const inp = promptAddKey('gsk_... (backup key)', (val) => {
+      if (val && !pendingGroqKeys.includes(val)) {
+        pendingGroqKeys.push(val);
+        renderExtraKeys(groqExtraKeys, pendingGroqKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
+          pendingGroqKeys.splice(i, 1);
+          renderExtraKeys(groqExtraKeys, pendingGroqKeys.map((k, j) => `Key ${j + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), arguments.callee);
+        });
+      }
+    });
+    groqExtraKeys.parentElement.appendChild(inp);
+    inp.focus();
+  });
+
+  btnAddGeminiKey.addEventListener('click', () => {
+    const inp = promptAddKey('AIza... (backup key)', (val) => {
+      if (val && !pendingGeminiKeys.includes(val)) {
+        pendingGeminiKeys.push(val);
+        renderExtraKeys(geminiExtraKeys, pendingGeminiKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
+          pendingGeminiKeys.splice(i, 1);
+          renderExtraKeys(geminiExtraKeys, pendingGeminiKeys.map((k, j) => `Key ${j + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), arguments.callee);
+        });
+      }
+    });
+    geminiExtraKeys.parentElement.appendChild(inp);
+    inp.focus();
+  });
+
+  // ─────────────────────────────────────────────
   // Settings Modal
   // ─────────────────────────────────────────────
   btnSettings.addEventListener('click', async () => {
@@ -375,6 +450,18 @@
       settingsGroqKey.placeholder = providerCfg.groqApiKey || 'gsk_...';
       settingsGeminiKey.value = '';
       settingsGeminiKey.placeholder = providerCfg.geminiApiKey || 'AIza...';
+
+      // Load existing extra keys (already masked)
+      pendingGroqKeys = [];
+      pendingGeminiKeys = [];
+      renderExtraKeys(groqExtraKeys, providerCfg.groqApiKeys || [], (i) => {
+        (providerCfg.groqApiKeys || []).splice(i, 1);
+        renderExtraKeys(groqExtraKeys, providerCfg.groqApiKeys || [], arguments.callee);
+      });
+      renderExtraKeys(geminiExtraKeys, providerCfg.geminiApiKeys || [], (i) => {
+        (providerCfg.geminiApiKeys || []).splice(i, 1);
+        renderExtraKeys(geminiExtraKeys, providerCfg.geminiApiKeys || [], arguments.callee);
+      });
 
       settingsHoverDelay.value = settings.hoverDelay || 800;
       settingsAutostart.classList.toggle('on', !!settings.autoStart);
@@ -400,11 +487,13 @@
       const groqKey   = settingsGroqKey.value.trim();
       const geminiKey = settingsGeminiKey.value.trim();
 
-      // Save provider + keys
+      // Save provider + keys (including extra keys)
       await window.niro.setProviderConfig({
-        provider:    activeProvider,
-        groqApiKey:  groqKey   || undefined,
-        geminiApiKey:geminiKey || undefined,
+        provider:      activeProvider,
+        groqApiKey:    groqKey   || undefined,
+        geminiApiKey:  geminiKey || undefined,
+        groqApiKeys:   pendingGroqKeys.length > 0 ? pendingGroqKeys : undefined,
+        geminiApiKeys: pendingGeminiKeys.length > 0 ? pendingGeminiKeys : undefined,
       });
 
       // Save hover delay

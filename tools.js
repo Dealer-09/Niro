@@ -544,12 +544,7 @@ async function search_files({ query, directory }) {
 // ─────────────────────────────────────────────────
 async function run_task({ task }) {
   try {
-    if (!browserBridge.isReady()) {
-      return {
-        success: false,
-        result: 'Browser engine is not ready yet. Chrome may still be launching. Try again in a moment.'
-      };
-    }
+    // ensureReady() handles lazy init — no need to check isReady() first
     const result = await browserBridge.runTask(task);
     return { success: true, result: result || 'Browser task completed.' };
   } catch (err) {

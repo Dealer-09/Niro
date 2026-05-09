@@ -96,7 +96,11 @@
       <div id="section-groq" class="provider-section">
         <div class="setting-group">
           <label>Groq API Key <span class="hint">— console.groq.com</span></label>
-          <input type="password" id="settings-groq-key" placeholder="gsk_...">
+          <div class="key-input-row">
+            <input type="password" id="settings-groq-key" placeholder="gsk_...">
+            <button class="btn-add-key" id="btn-add-groq-key" title="Add backup key">+</button>
+          </div>
+          <div id="groq-extra-keys" class="extra-keys-list"></div>
         </div>
         <div class="local-hint">
           <span>💡</span>
@@ -108,7 +112,11 @@
       <div id="section-gemini" class="provider-section hidden">
         <div class="setting-group">
           <label>Gemini API Key <span class="hint">— aistudio.google.com</span></label>
-          <input type="password" id="settings-gemini-key" placeholder="AIza...">
+          <div class="key-input-row">
+            <input type="password" id="settings-gemini-key" placeholder="AIza...">
+            <button class="btn-add-key" id="btn-add-gemini-key" title="Add backup key">+</button>
+          </div>
+          <div id="gemini-extra-keys" class="extra-keys-list"></div>
         </div>
         <div class="local-hint">
           <span>💡</span>

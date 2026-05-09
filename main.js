@@ -40,6 +40,9 @@ const store = new Store({
     provider: 'groq',          // 'groq' | 'gemini'
     groqApiKey: '',
     geminiApiKey: '',
+    // Extra API keys for fallback when daily quota is hit
+    groqApiKeys: [],    // array of additional Groq keys
+    geminiApiKeys: [],  // array of additional Gemini keys
     tasks: [
       { id: '1', name: 'Chrome',      icon: '🌐', instruction: 'Open Google Chrome' },
       { id: '2', name: 'Notepad',     icon: '📝', instruction: 'Open Notepad' },
@@ -82,18 +85,22 @@ function initializeApiClients() {
   const provider = store.get('provider') || 'groq';
   const groqKey = store.get('groqApiKey') || '';
   const geminiKey = store.get('geminiApiKey') || '';
+  const groqKeys = [groqKey, ...(store.get('groqApiKeys') || [])].filter(Boolean);
+  const geminiKeys = [geminiKey, ...(store.get('geminiApiKeys') || [])].filter(Boolean);
   const apiKey = provider === 'gemini' ? geminiKey : groqKey;
+  const allKeys = provider === 'gemini' ? geminiKeys : groqKeys;
 
   if (!apiKey) {
     console.warn('[Niro] No API key set — open Settings to add a Groq or Gemini key.');
     return;
   }
 
-  initClient({ provider, apiKey });
+  initClient({ provider, apiKey, allKeys });
 
-  // Always give the browser agent the Gemini key (it needs it for vision regardless of chat provider)
-  if (geminiKey) {
-    browser.setGeminiApiKey(geminiKey);
+  // Always give the browser agent the Gemini key pool
+  if (geminiKeys.length > 0) {
+    browser.setGeminiApiKey(geminiKeys[0]);
+    browser.setGeminiApiKeys(geminiKeys);
   }
 }
 
@@ -388,14 +395,17 @@ ipcMain.handle('settings:getProviderConfig', () => {
     provider: store.get('provider') || 'groq',
     groqApiKey: _maskKey(store.get('groqApiKey') || ''),
     geminiApiKey: _maskKey(store.get('geminiApiKey') || ''),
+    groqApiKeys: (store.get('groqApiKeys') || []).map(_maskKey),
+    geminiApiKeys: (store.get('geminiApiKeys') || []).map(_maskKey),
   };
 });
 
-ipcMain.handle('settings:setProviderConfig', (event, { provider, groqApiKey, geminiApiKey }) => {
+ipcMain.handle('settings:setProviderConfig', (event, { provider, groqApiKey, geminiApiKey, groqApiKeys, geminiApiKeys }) => {
   if (provider) store.set('provider', provider);
   if (groqApiKey && groqApiKey.trim()) store.set('groqApiKey', groqApiKey.trim());
   if (geminiApiKey && geminiApiKey.trim()) store.set('geminiApiKey', geminiApiKey.trim());
-  // Re-initialize with new config
+  if (Array.isArray(groqApiKeys)) store.set('groqApiKeys', groqApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
+  if (Array.isArray(geminiApiKeys)) store.set('geminiApiKeys', geminiApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
   initializeApiClients();
   return true;
 });

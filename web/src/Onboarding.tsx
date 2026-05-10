@@ -296,17 +296,22 @@ function AboutFrame({ onNext, onBack, setName, setRole }: { onNext: () => void; 
 }
 
 // ── Building Frame ─────────────────────────────────────────────────────────────
+const BUILDING_STEPS = ["Analysing how you communicate", "Learning your habits & workflow", "Configuring your privacy settings"];
+
 function BuildingFrame({ onDone, onBack }: { onDone: () => void; onBack: () => void }) {
-  const steps = ["Analysing how you communicate", "Learning your habits & workflow", "Configuring your privacy settings"];
+
   const [done, setDone] = useState<number[]>([]);
   const [started, setStarted] = useState(false);
 
   useEffect(() => {
-    setStarted(true);
-    steps.forEach((_, i) => setTimeout(() => setDone(d => [...d, i]), 900 + i * 950));
-    const t = setTimeout(onDone, 900 + steps.length * 950 + 700);
-    return () => clearTimeout(t);
-  }, []);
+    const tStart = setTimeout(() => setStarted(true), 10);
+    BUILDING_STEPS.forEach((_, i) => setTimeout(() => setDone(d => [...d, i]), 900 + i * 950));
+    const t = setTimeout(onDone, 900 + BUILDING_STEPS.length * 950 + 700);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(tStart);
+    };
+  }, [onDone]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "28px", width: "100%" }}>
@@ -319,7 +324,7 @@ function BuildingFrame({ onDone, onBack }: { onDone: () => void; onBack: () => v
         </h1>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-        {steps.map((s, i) => (
+        {BUILDING_STEPS.map((s, i) => (
           <div key={s} className="fade-up" style={{ animationDelay: `${0.12 + i * 0.1}s`, opacity: 0, display: "flex", alignItems: "center", gap: "14px" }}>
             <div style={{
               width: "26px", height: "26px", borderRadius: "50%",
@@ -335,7 +340,7 @@ function BuildingFrame({ onDone, onBack }: { onDone: () => void; onBack: () => v
         ))}
       </div>
       <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: "99px", height: "5px", overflow: "hidden" }}>
-        <div style={{ height: "100%", background: "linear-gradient(90deg,#4ade80,#a3e635)", borderRadius: "99px", width: `${Math.min(100, (done.length / steps.length) * 100)}%`, transition: "width 0.8s cubic-bezier(0.4,0,0.2,1)" }} />
+        <div style={{ height: "100%", background: "linear-gradient(90deg,#4ade80,#a3e635)", borderRadius: "99px", width: `${Math.min(100, (done.length / BUILDING_STEPS.length) * 100)}%`, transition: "width 0.8s cubic-bezier(0.4,0,0.2,1)" }} />
       </div>
     </div>
   );

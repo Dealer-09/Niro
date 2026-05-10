@@ -44,13 +44,16 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
    cd CICADA3301_PS02
    ```
 
-2. **Install dependencies**:
+2. **Install dependencies & Run (Desktop Agent)**:
    ```bash
    npm install
+   npm run dev
    ```
 
-3. **Run in development mode**:
+3. **Install dependencies & Run (Web Landing Page)**:
    ```bash
+   cd web
+   npm install
    npm run dev
    ```
 
@@ -62,7 +65,7 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 npm run build
 ```
 
-The installer (`Niro Setup 1.0.0.exe`) and portable executable (`win-unpacked/Niro.exe`) will be in the `dist/` folder.
+The installer (`Niro Setup 1.0.1.exe`) and portable executable (`win-unpacked/Niro.exe`) will be in the `dist/` folder.
 
 ## 🔑 API Keys
 
@@ -92,10 +95,12 @@ User message
 | Category | Tools |
 |---|---|
 | **Apps** | `open_app`, `close_app`, `focus_window`, `list_windows` |
-| **Web** | `open_website`, `run_task` (AI browser), `browser_open/click/type/read` |
+| **Web** | `open_website`, `run_task` (AI browser), `browser_open/click/type/read/close` |
 | **System** | `run_command` (PowerShell), `search_files`, `take_screenshot` |
-| **Input** | `type_text`, `press_key`, `mouse_click` |
-| **Utilities** | `set_timer`, `show_notification`, `save_task` |
+| **Input*** | `type_text`, `press_key`, `mouse_click` |
+| **Utilities** | `set_timer`, `show_notification`, `save_task`, `send_email` |
+
+*\* **Input Tools Note**: Keyboard and mouse automation requires the optional `@jitsi/robotjs` package. Install manually via `npm install @jitsi/robotjs` (requires Node native build tools).* 
 
 ## 💬 Sample Prompts
 

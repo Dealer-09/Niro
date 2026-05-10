@@ -466,10 +466,6 @@ ipcMain.handle('chat:clear', () => {
 });
 
 // ─────────────────────────────────────────────────
-// IPC: Audio Transcription (Groq Whisper)
-// Always uses the user's Groq API key — never a hardcoded key
-// ─────────────────────────────────────────────────
-// ─────────────────────────────────────────────────
 // IPC: Gmail Credentials
 // ─────────────────────────────────────────────────
 ipcMain.handle('settings:getGmail', () => {

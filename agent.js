@@ -27,20 +27,16 @@ STRICT RULES — follow exactly:
 2. After a tool returns a result, give the user the answer as text. STOP. Do not call more tools.
 3. NEVER call show_notification unless the user explicitly says "notify me" or "show a notification".
 4. Use open_app for apps, open_website for simple URLs, run_command for system info, set_timer for timers.
-5. Use run_task for ANY web interaction — Gmail, forms, clicking buttons, filling fields, scheduling.
-6. One tool call per turn unless the task genuinely requires chaining (e.g. open app THEN notify).
+5. Use run_task ONLY for complex web interactions (filling forms, clicking buttons, logging in).
+6. For "open X in browser" or "search for X on YouTube/Spotify/Google" — use open_website with the correct URL, NOT run_task.
 7. You CAN answer general knowledge questions (dates, math, facts) WITHOUT using any tool.
-8. list_windows IS available — always use it when asked about open windows.
-9. take_screenshot IS available — always use it when asked to see the screen.
+8. For "calculate X and show in notification" — compute the answer yourself, then call show_notification with the RESULT only.
+9. list_windows IS available — always use it when asked about open windows.
+10. take_screenshot IS available — always use it when asked to see the screen.
 
-BROWSER TASKS — use run_task for anything involving a website:
-- "Search online" → run_task("Go to Google and search for X")
-- run_task connects to your real Chrome with all logins and cookies
-
-EMAIL — use send_email tool (NOT run_task) for all email requests:
+EMAIL — use send_email tool for all email requests:
 - "Send an email" → send_email(to, subject, body)
 - "Schedule an email" → send_email(to, subject, body, scheduleTime="2:40 PM")
-- send_email uses Gmail SMTP — requires Gmail credentials in ⚙️ Settings
 
 POWERSHELL COMMANDS — use these exact strings:
 - Public IP: (Invoke-RestMethod https://api.ipify.org)
@@ -48,8 +44,7 @@ POWERSHELL COMMANDS — use these exact strings:
 - RAM free GB: [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)
 - Disk C free GB: [math]::Round((Get-PSDrive C).Free/1GB,1)
 - Disk C total GB: [math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)
-- CPU name: (Get-WmiObject Win32_Processor).Name
-- CPU cores: (Get-WmiObject Win32_Processor).NumberOfCores
+- CPU name+cores: "$((Get-WmiObject Win32_Processor).Name) — $((Get-WmiObject Win32_Processor).NumberOfCores) cores"
 - PC name: $env:COMPUTERNAME
 - Windows ver: (Get-WmiObject Win32_OperatingSystem).Caption
 - Uptime hours: [math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)
@@ -57,13 +52,13 @@ POWERSHELL COMMANDS — use these exact strings:
 - Top processes RAM: Get-Process | Sort-Object WorkingSet -Desc | Select-Object -First 10 Name,@{N='RAM(MB)';E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -Auto | Out-String -Width 200
 - List windows: Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object ProcessName,MainWindowTitle | Format-Table -Auto | Out-String -Width 200
 
-URL rules:
-- YouTube channel @name: https://www.youtube.com/@<name>
+URL rules — use open_website for ALL of these:
+- YouTube channel: https://www.youtube.com/@<name>
 - YouTube search: https://www.youtube.com/results?search_query=<query>
+- Spotify search: https://open.spotify.com/search/<query>
 - Google search: https://www.google.com/search?q=<query>
 - GitHub repo: https://github.com/<owner>/<repo>
 - Wikipedia: https://en.wikipedia.org/wiki/<topic>
-- Always use open_website for simple URL opening, run_task for web interactions
 
 You are on Windows.`;
 
@@ -296,7 +291,7 @@ const GROQ_CORE_TOOLS = CORE_TOOLS.filter(t =>
 
 // Groq gets core tools by default; browser tools added only when user explicitly
 // wants AI browser automation (not just opening a URL with open_website)
-const BROWSER_KEYWORDS = /\b(automate|browser agent|run task|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with|google docs|google sheets)\b/i;
+const BROWSER_KEYWORDS = /\b(automate|browser agent|fill form|log in|sign in|click on|scroll down|scrape|extract from website|interact with|google docs|google sheets)\b/i;
 
 function getGroqTools(message) {
   const tools = [...GROQ_CORE_TOOLS];
@@ -333,8 +328,8 @@ const DIRECT_COMMANDS = [
   {
     pattern: /\b(cpu|processor)\b/i,
     tool: 'run_command',
-    args: { command: '(Get-WmiObject Win32_Processor).Name' },
-    format: (r) => `Your CPU is: ${r.trim()}`,
+    args: { command: '"" + (Get-WmiObject Win32_Processor).Name + " — " + (Get-WmiObject Win32_Processor).NumberOfCores + " cores"' },
+    format: (r) => `Your CPU: ${r.trim()}`,
   },
   {
     pattern: /\bwindows\s*(version|ver)\b|\bos\s*version\b/i,
@@ -526,6 +521,35 @@ export async function runAgent(message, chatHistory, sendEvent) {
 
 // ─── Gemini agent loop ────────────────────────────────────────────────────────
 async function runGeminiAgent(message, chatHistory, sendEvent) {
+  // Apply same multi-part system info guardrail as Groq — ensures accurate results
+  const wantsIp     = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
+  const wantsName   = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
+  const wantsWin    = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
+  const wantsCpu    = /\b(cpu|processor)\b/i.test(message);
+  const wantsRam    = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+  const wantsDisk   = /\b(disk|drive|storage|space)\b/i.test(message);
+  const wantsUptime = /\buptime\b/i.test(message);
+  const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam, wantsDisk, wantsUptime].filter(Boolean).length;
+
+  if (multiInfoCount >= 2) {
+    const cmds = [];
+    const outputParts = [];
+    if (wantsIp)     { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
+    if (wantsName)   { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
+    if (wantsWin)    { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
+    if (wantsCpu)    { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name + " — " + (Get-WmiObject Win32_Processor).NumberOfCores + " cores"'); outputParts.push('"CPU: " + $cpu'); }
+    if (wantsRam)    { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
+    if (wantsDisk)   { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
+    if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
+    const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
+    sendEvent('agent:tool', { name: 'run_command', input: { command: 'system info' } });
+    const result = await executeTool('run_command', { command: cmd });
+    const reply = result.success ? result.result.trim() : `Failed: ${result.result}`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
   const history = historyToGeminiContents(chatHistory);
 
   const chat = llmClient.chats.create({
@@ -575,8 +599,27 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
           // Try rotating to next key first
           if (rotateToNextKey()) {
             sendEvent('agent:chunk', { role: 'assistant', text: `⏳ Key quota reached, switching to backup key...` });
-            // Retry with new key — rebuild chat session
-            return await runGeminiAgent(message, chatHistory, sendEvent);
+            // Rebuild the client with new key and retry just this API call
+            // Don't restart the whole agent — just continue the loop with new key
+            try {
+              if (toolResultParts && toolResultParts.length > 0) {
+                response = await chat.sendMessage({ message: toolResultParts });
+                toolResultParts = null;
+              } else if (nextMessage) {
+                response = await chat.sendMessage({ message: nextMessage });
+                nextMessage = null;
+              } else {
+                break;
+              }
+            } catch (retryErr) {
+              // If retry also fails, fall through to all-keys-exhausted message
+              const retryMsg = retryErr.message || '';
+              if (retryMsg.includes('PerDay') || retryMsg.includes('RESOURCE_EXHAUSTED')) {
+                // All keys exhausted
+              } else {
+                throw retryErr;
+              }
+            }
           }
           // All keys exhausted
           const now = new Date();
@@ -689,18 +732,74 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
     return reply;
   }
 
-  // ── Direct intercept: explicit notification requests ─────────────────────
+  // ── Direct intercept for Spotify/YouTube/Google search in browser ────────
+  const spotifyMatch = message.match(/\bspotify\b.*\b(play|search|open)\b|\b(play|search)\b.*\bspotify\b/i);
+  const ytSearchMatch = message.match(/\b(search|look up)\b.*\b(on|in)\s+youtube\b|\byoutube\b.*\b(search|look up)\b/i);
+  const googleSearchMatch = message.match(/\b(search|look up)\b.*\b(on|in)\s+google\b|\bgoogle\b.*\b(search|look up)\b/i);
+
+  if (spotifyMatch) {
+    const queryMatch = message.match(/\bplay\s+(.+?)(?:\s+by\s+(.+?))?(?:\s+on\s+spotify)?$/i)
+      || message.match(/\bsearch\s+(?:for\s+)?(.+?)\s+(?:on\s+)?spotify/i);
+    const query = queryMatch ? encodeURIComponent(queryMatch[1] + (queryMatch[2] ? ' ' + queryMatch[2] : '')) : '';
+    const url = query ? `https://open.spotify.com/search/${query}` : 'https://open.spotify.com';
+    sendEvent('agent:tool', { name: 'open_website', input: { url } });
+    await executeTool('open_website', { url });
+    const reply = `Opened Spotify${query ? ` and searched for "${decodeURIComponent(query)}"` : ''}.`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  if (ytSearchMatch) {
+    const queryMatch = message.match(/\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube/i)
+      || message.match(/\byoutube\b.*\bsearch\s+(?:for\s+)?(.+)/i);
+    const query = queryMatch ? encodeURIComponent(queryMatch[1].trim()) : '';
+    const url = query ? `https://www.youtube.com/results?search_query=${query}` : 'https://www.youtube.com';
+    sendEvent('agent:tool', { name: 'open_website', input: { url } });
+    await executeTool('open_website', { url });
+    const reply = `Opened YouTube${query ? ` and searched for "${decodeURIComponent(query)}"` : ''}.`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  if (googleSearchMatch) {
+    const queryMatch = message.match(/\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+google/i)
+      || message.match(/\bgoogle\b.*\bsearch\s+(?:for\s+)?(.+)/i);
+    const query = queryMatch ? encodeURIComponent(queryMatch[1].trim()) : '';
+    const url = query ? `https://www.google.com/search?q=${query}` : 'https://www.google.com';
+    sendEvent('agent:tool', { name: 'open_website', input: { url } });
+    await executeTool('open_website', { url });
+    const reply = `Opened Google${query ? ` and searched for "${decodeURIComponent(query)}"` : ''}.`;
+    sendEvent('agent:chunk', { role: 'assistant', text: reply });
+    sendEvent('agent:done', {});
+    return reply;
+  }
+
+  // ── Direct intercept for notification requests ────────────────────────────
   // Only fire if NOT a timer request (timer + notification is handled by set_timer)
   const isTimerRequest = /\b(set|start|create)\b.*\btimer\b|\btimer\b.*\b(for|of)\b/i.test(message);
   const notifMatch = !isTimerRequest && /\b(show|send|display|give me|pop up)\b.*\bnotification\b|\bnotif(y|ication)\b.*\bsaying\b/i.test(message);
   if (notifMatch) {
-    // Extract the message text — look for quoted string or "saying X"
     const quotedMatch = message.match(/["']([^"']+)["']/);
     const sayingMatch = message.match(/\bsaying\s+["']?([^"']+?)["']?\s*$/i);
-    const notifText = quotedMatch?.[1] || sayingMatch?.[1] || message.replace(/show.*notification.*saying/i, '').trim();
-    const notifTitle = 'Niro';
-    sendEvent('agent:tool', { name: 'show_notification', input: { title: notifTitle, message: notifText } });
-    await executeTool('show_notification', { title: notifTitle, message: notifText });
+    // If it's a math calculation, compute the result first
+    const calcMatch = message.match(/(?:calculate|compute|what(?:'s| is))\s+([\d\s+\-*/().^%]+)\s+(?:and\s+)?show/i);
+    let notifText;
+    if (calcMatch) {
+      try {
+        const expr = calcMatch[1].trim();
+        // eslint-disable-next-line no-new-func
+        const result = Function(`"use strict"; return (${expr})`)();
+        notifText = `${expr} = ${result}`;
+      } catch (_) {
+        notifText = quotedMatch?.[1] || sayingMatch?.[1] || 'Done';
+      }
+    } else {
+      notifText = quotedMatch?.[1] || sayingMatch?.[1] || message.replace(/show.*notification.*saying/i, '').trim();
+    }
+    sendEvent('agent:tool', { name: 'show_notification', input: { title: 'Niro', message: notifText } });
+    await executeTool('show_notification', { title: 'Niro', message: notifText });
     const reply = `Notification shown: "${notifText}"`;
     sendEvent('agent:chunk', { role: 'assistant', text: reply });
     sendEvent('agent:done', {});
@@ -762,9 +861,42 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
 
     sendEvent('agent:tool', { name: 'search_files', input: { query, directory: dir } });
     const result = await executeTool('search_files', { query, directory: dir });
-    const reply = result.success && result.result !== `No files found matching '${query}'`
-      ? `Found files matching "${query}":\n${result.result}`
-      : `No files found matching "${query}" in ${dir.split('\\').pop()}.`;
+
+    // Check if user wants to open the first file found
+    const wantsOpen = /\bopen\b.*\b(first|it|the file)\b|\b(first|it)\b.*\bopen\b/i.test(message);
+    const wantsNotify = /\bnotif(y|ication)\b|\bshow.*notification\b/i.test(message);
+    const notifyText = message.match(/notification\s+saying\s+["']?([^"']+?)["']?\s*$/i)?.[1] || 'File opened';
+
+    if (!result.success || result.result === `No files found matching '${query}'`) {
+      const reply = `No files found matching "${query}" in ${dir.split('\\').pop()}.`;
+      sendEvent('agent:chunk', { role: 'assistant', text: reply });
+      sendEvent('agent:done', {});
+      return reply;
+    }
+
+    // Extract first file path from results
+    const firstFileLine = result.result.split('\n').find(l => l.trim().match(/^[A-Z]:\\/));
+    const firstFile = firstFileLine ? firstFileLine.trim().split(/\s{2,}/)[0] : null;
+
+    if (wantsOpen && firstFile) {
+      sendEvent('agent:tool', { name: 'open_app', input: { app: `notepad "${firstFile}"` } });
+      await executeTool('open_app', { app: `notepad "${firstFile}"` });
+      if (wantsNotify) {
+        await new Promise(r => setTimeout(r, 1500)); // wait for notepad to open
+        sendEvent('agent:tool', { name: 'show_notification', input: { title: 'Niro', message: notifyText } });
+        await executeTool('show_notification', { title: 'Niro', message: notifyText });
+        const reply = `Opened "${firstFile}" in Notepad and showed notification: "${notifyText}"`;
+        sendEvent('agent:chunk', { role: 'assistant', text: reply });
+        sendEvent('agent:done', {});
+        return reply;
+      }
+      const reply = `Opened "${firstFile}" in Notepad.`;
+      sendEvent('agent:chunk', { role: 'assistant', text: reply });
+      sendEvent('agent:done', {});
+      return reply;
+    }
+
+    const reply = `Found files matching "${query}":\n${result.result}`;
     sendEvent('agent:chunk', { role: 'assistant', text: reply });
     sendEvent('agent:done', {});
     return reply;

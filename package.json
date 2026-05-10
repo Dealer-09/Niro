@@ -1,6 +1,6 @@
 {
   "name": "niro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Niro — A lightweight Windows desktop AI agent that lives at the top of your screen",
   "main": "main.js",
   "type": "module",
@@ -100,7 +100,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build_assets/uninstaller.nsh",
+      "deleteAppDataOnUninstall": false
     }
   }
 }

@@ -399,8 +399,8 @@ ipcMain.handle('settings:getProviderConfig', () => {
     provider: store.get('provider') || 'groq',
     groqApiKey: _maskKey(store.get('groqApiKey') || ''),
     geminiApiKey: _maskKey(store.get('geminiApiKey') || ''),
-    groqApiKeys: (store.get('groqApiKeys') || []).map(_maskKey),
-    geminiApiKeys: (store.get('geminiApiKeys') || []).map(_maskKey),
+    groqApiKeys: store.get('groqApiKeys') || [],
+    geminiApiKeys: store.get('geminiApiKeys') || [],
   };
 });
 
@@ -408,8 +408,8 @@ ipcMain.handle('settings:setProviderConfig', (event, { provider, groqApiKey, gem
   if (provider) store.set('provider', provider);
   if (groqApiKey && groqApiKey.trim()) store.set('groqApiKey', groqApiKey.trim());
   if (geminiApiKey && geminiApiKey.trim()) store.set('geminiApiKey', geminiApiKey.trim());
-  if (Array.isArray(groqApiKeys)) store.set('groqApiKeys', groqApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
-  if (Array.isArray(geminiApiKeys)) store.set('geminiApiKeys', geminiApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
+  if (groqApiKeys !== undefined) store.set('groqApiKeys', groqApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
+  if (geminiApiKeys !== undefined) store.set('geminiApiKeys', geminiApiKeys.filter(k => k && k.trim()).map(k => k.trim()));
   initializeApiClients();
   return true;
 });

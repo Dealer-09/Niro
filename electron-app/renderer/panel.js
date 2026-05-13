@@ -477,17 +477,11 @@
       settingsGeminiKey.value = '';
       settingsGeminiKey.placeholder = providerCfg.geminiApiKey || 'AIza...';
 
-      // Load existing extra keys (already masked)
-      pendingGroqKeys = [];
-      pendingGeminiKeys = [];
-      renderExtraKeys(groqExtraKeys, providerCfg.groqApiKeys || [], (i) => {
-        (providerCfg.groqApiKeys || []).splice(i, 1);
-        renderExtraKeys(groqExtraKeys, providerCfg.groqApiKeys || [], arguments.callee);
-      });
-      renderExtraKeys(geminiExtraKeys, providerCfg.geminiApiKeys || [], (i) => {
-        (providerCfg.geminiApiKeys || []).splice(i, 1);
-        renderExtraKeys(geminiExtraKeys, providerCfg.geminiApiKeys || [], arguments.callee);
-      });
+      // Load existing extra keys (unmasked)
+      pendingGroqKeys = [...(providerCfg.groqApiKeys || [])];
+      pendingGeminiKeys = [...(providerCfg.geminiApiKeys || [])];
+      refreshGroqExtraKeys();
+      refreshGeminiExtraKeys();
 
       settingsHoverDelay.value = settings.hoverDelay || 800;
       settingsAutostart.classList.toggle('on', !!settings.autoStart);
@@ -527,8 +521,8 @@
         provider:      activeProvider,
         groqApiKey:    groqKey   || undefined,
         geminiApiKey:  geminiKey || undefined,
-        groqApiKeys:   pendingGroqKeys.length > 0 ? pendingGroqKeys : undefined,
-        geminiApiKeys: pendingGeminiKeys.length > 0 ? pendingGeminiKeys : undefined,
+        groqApiKeys:   pendingGroqKeys,
+        geminiApiKeys: pendingGeminiKeys,
       });
 
       // Save Gmail credentials

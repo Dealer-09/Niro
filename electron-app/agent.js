@@ -15,7 +15,7 @@ let _currentKeyIndex = 0;  // which key we're currently using
 
 // ─── Model defaults ───────────────────────────────────────────────────────────
 const PROVIDER_DEFAULTS = {
-  groq:   { model: 'llama-3.1-8b-instant', baseURL: 'https://api.groq.com/openai/v1' },
+  groq: { model: 'llama-3.1-8b-instant', baseURL: 'https://api.groq.com/openai/v1' },
   gemini: { model: 'gemini-2.5-flash-lite' }, // fastest, best free tier throughput, strong tool calling
 };
 
@@ -516,7 +516,7 @@ async function callGroq(messages, tools) {
         if (parsed?.error?.code === 'rate_limit_exceeded') {
           msg = `Rate limit hit. Please wait a moment and try again. (${parsed.error.message.split('.')[0]})`;
         }
-      } catch (_) {}
+      } catch (_) { }
       throw new Error(msg);
     }
 
@@ -560,12 +560,12 @@ export async function runAgent(message, chatHistory, sendEvent) {
 // ─── Gemini agent loop ────────────────────────────────────────────────────────
 async function runGeminiAgent(message, chatHistory, sendEvent) {
   // Apply same multi-part system info guardrail as Groq — ensures accurate results
-  const wantsIp     = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
-  const wantsName   = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
-  const wantsWin    = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
-  const wantsCpu    = /\b(cpu|processor)\b/i.test(message);
-  const wantsRam    = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
-  const wantsDisk   = /\b(disk|drive|storage|space)\b/i.test(message);
+  const wantsIp = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
+  const wantsName = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
+  const wantsWin = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
+  const wantsCpu = /\b(cpu|processor)\b/i.test(message);
+  const wantsRam = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+  const wantsDisk = /\b(disk|drive|storage|space)\b/i.test(message);
   const wantsUptime = /\buptime\b/i.test(message);
   const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam, wantsDisk, wantsUptime].filter(Boolean).length;
 
@@ -574,12 +574,12 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
   if (multiInfoCount >= 2 || wantsRam) {
     const cmds = [];
     const outputParts = [];
-    if (wantsIp)     { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
-    if (wantsName)   { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
-    if (wantsWin)    { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
-    if (wantsCpu)    { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name + " — " + (Get-WmiObject Win32_Processor).NumberOfCores + " cores"'); outputParts.push('"CPU: " + $cpu'); }
-    if (wantsRam)    { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
-    if (wantsDisk)   { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
+    if (wantsIp) { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
+    if (wantsName) { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
+    if (wantsWin) { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
+    if (wantsCpu) { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name + " — " + (Get-WmiObject Win32_Processor).NumberOfCores + " cores"'); outputParts.push('"CPU: " + $cpu'); }
+    if (wantsRam) { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
+    if (wantsDisk) { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
     if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
     const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
     const label = wantsRam && multiInfoCount === 1 ? 'RAM info' : 'system info';
@@ -854,24 +854,24 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
 
   // ── Direct intercept: multi-part system info ─────────────────────────────
   // Handle "IP + computer name + Windows version all in one" type queries
-  const wantsIp     = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
-  const wantsName   = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
-  const wantsWin    = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
-  const wantsCpu    = /\b(cpu|processor)\b/i.test(message);
-  const wantsRam    = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
-  const wantsDisk   = /\b(disk|drive|storage|space)\b/i.test(message);
+  const wantsIp = /\b(public\s+)?ip(\s+address)?\b/i.test(message);
+  const wantsName = /\b(computer|pc|machine|host)\s*name\b/i.test(message);
+  const wantsWin = /\bwindows\s*(version|ver)\b|\bos\s*version\b/i.test(message);
+  const wantsCpu = /\b(cpu|processor)\b/i.test(message);
+  const wantsRam = /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|available)\b/i.test(message);
+  const wantsDisk = /\b(disk|drive|storage|space)\b/i.test(message);
   const wantsUptime = /\buptime\b/i.test(message);
 
   const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam, wantsDisk, wantsUptime].filter(Boolean).length;
   if (multiInfoCount >= 2) {
     const cmds = [];
     const outputParts = [];
-    if (wantsIp)     { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
-    if (wantsName)   { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
-    if (wantsWin)    { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
-    if (wantsCpu)    { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name'); outputParts.push('"CPU: " + $cpu'); }
-    if (wantsRam)    { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
-    if (wantsDisk)   { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
+    if (wantsIp) { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
+    if (wantsName) { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
+    if (wantsWin) { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
+    if (wantsCpu) { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name'); outputParts.push('"CPU: " + $cpu'); }
+    if (wantsRam) { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
+    if (wantsDisk) { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
     if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
 
     const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
@@ -889,90 +889,90 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
 
   if (!isMultiPartQuery) {
 
-  // ── Direct intercept for file search ─────────────────────────────────────
-  // Only trigger if message explicitly asks to find/search for files
-  const isFileSearch = /\b(find|search|look for|locate)\b.*\bfile[s]?\b|\bfile[s]?\b.*\b(find|search|on desktop|in downloads|in documents)\b/i.test(message);
-  const desktopMatch   = /\bdesktop\b/i.test(message);
-  const downloadsMatch = /\bdownloads?\b/i.test(message);
-  const documentsMatch = /\bdocuments?\b/i.test(message);
-  const extMatch   = isFileSearch ? message.match(/\b(pdf|docx?|txt|xlsx?|png|jpg|jpeg|mp4|mp3|zip)\b/i) : null;
-  const namedMatch = isFileSearch ? message.match(/\bnamed?\s+["']?([^\s"']+)["']?/i) : null;
+    // ── Direct intercept for file search ─────────────────────────────────────
+    // Only trigger if message explicitly asks to find/search for files
+    const isFileSearch = /\b(find|search|look for|locate)\b.*\bfile[s]?\b|\bfile[s]?\b.*\b(find|search|on desktop|in downloads|in documents)\b/i.test(message);
+    const desktopMatch = /\bdesktop\b/i.test(message);
+    const downloadsMatch = /\bdownloads?\b/i.test(message);
+    const documentsMatch = /\bdocuments?\b/i.test(message);
+    const extMatch = isFileSearch ? message.match(/\b(pdf|docx?|txt|xlsx?|png|jpg|jpeg|mp4|mp3|zip)\b/i) : null;
+    const namedMatch = isFileSearch ? message.match(/\bnamed?\s+["']?([^\s"']+)["']?/i) : null;
 
-  if (extMatch || namedMatch) {
-    const query = namedMatch ? namedMatch[1] : `.${extMatch[1]}`;
-    let dir = process.env.USERPROFILE || 'C:\\Users\\' + (process.env.USERNAME || 'User');
-    if (desktopMatch) dir = `${process.env.USERPROFILE}\\Desktop`;
-    else if (downloadsMatch) dir = `${process.env.USERPROFILE}\\Downloads`;
-    else if (documentsMatch) dir = `${process.env.USERPROFILE}\\Documents`;
+    if (extMatch || namedMatch) {
+      const query = namedMatch ? namedMatch[1] : `.${extMatch[1]}`;
+      let dir = process.env.USERPROFILE || 'C:\\Users\\' + (process.env.USERNAME || 'User');
+      if (desktopMatch) dir = `${process.env.USERPROFILE}\\Desktop`;
+      else if (downloadsMatch) dir = `${process.env.USERPROFILE}\\Downloads`;
+      else if (documentsMatch) dir = `${process.env.USERPROFILE}\\Documents`;
 
-    sendEvent('agent:tool', { name: 'search_files', input: { query, directory: dir } });
-    const result = await executeTool('search_files', { query, directory: dir });
+      sendEvent('agent:tool', { name: 'search_files', input: { query, directory: dir } });
+      const result = await executeTool('search_files', { query, directory: dir });
 
-    // Check if user wants to open the first file found
-    const wantsOpen = /\bopen\b.*\b(first|it|the file)\b|\b(first|it)\b.*\bopen\b/i.test(message);
-    const wantsNotify = /\bnotif(y|ication)\b|\bshow.*notification\b/i.test(message);
-    const notifyText = message.match(/notification\s+saying\s+["']?([^"']+?)["']?\s*$/i)?.[1] || 'File opened';
+      // Check if user wants to open the first file found
+      const wantsOpen = /\bopen\b.*\b(first|it|the file)\b|\b(first|it)\b.*\bopen\b/i.test(message);
+      const wantsNotify = /\bnotif(y|ication)\b|\bshow.*notification\b/i.test(message);
+      const notifyText = message.match(/notification\s+saying\s+["']?([^"']+?)["']?\s*$/i)?.[1] || 'File opened';
 
-    if (!result.success || result.result === `No files found matching '${query}'`) {
-      const reply = `No files found matching "${query}" in ${dir.split('\\').pop()}.`;
-      sendEvent('agent:chunk', { role: 'assistant', text: reply });
-      sendEvent('agent:done', {});
-      return reply;
-    }
-
-    // Extract first file path from results
-    const firstFileLine = result.result.split('\n').find(l => l.trim().match(/^[A-Z]:\\/));
-    const firstFile = firstFileLine ? firstFileLine.trim().split(/\s{2,}/)[0] : null;
-
-    if (wantsOpen && firstFile) {
-      sendEvent('agent:tool', { name: 'open_app', input: { app: `notepad "${firstFile}"` } });
-      await executeTool('open_app', { app: `notepad "${firstFile}"` });
-      if (wantsNotify) {
-        await new Promise(r => setTimeout(r, 1500)); // wait for notepad to open
-        sendEvent('agent:tool', { name: 'show_notification', input: { title: 'Niro', message: notifyText } });
-        await executeTool('show_notification', { title: 'Niro', message: notifyText });
-        const reply = `Opened "${firstFile}" in Notepad and showed notification: "${notifyText}"`;
+      if (!result.success || result.result === `No files found matching '${query}'`) {
+        const reply = `No files found matching "${query}" in ${dir.split('\\').pop()}.`;
         sendEvent('agent:chunk', { role: 'assistant', text: reply });
         sendEvent('agent:done', {});
         return reply;
       }
-      const reply = `Opened "${firstFile}" in Notepad.`;
+
+      // Extract first file path from results
+      const firstFileLine = result.result.split('\n').find(l => l.trim().match(/^[A-Z]:\\/));
+      const firstFile = firstFileLine ? firstFileLine.trim().split(/\s{2,}/)[0] : null;
+
+      if (wantsOpen && firstFile) {
+        sendEvent('agent:tool', { name: 'open_app', input: { app: `notepad "${firstFile}"` } });
+        await executeTool('open_app', { app: `notepad "${firstFile}"` });
+        if (wantsNotify) {
+          await new Promise(r => setTimeout(r, 1500)); // wait for notepad to open
+          sendEvent('agent:tool', { name: 'show_notification', input: { title: 'Niro', message: notifyText } });
+          await executeTool('show_notification', { title: 'Niro', message: notifyText });
+          const reply = `Opened "${firstFile}" in Notepad and showed notification: "${notifyText}"`;
+          sendEvent('agent:chunk', { role: 'assistant', text: reply });
+          sendEvent('agent:done', {});
+          return reply;
+        }
+        const reply = `Opened "${firstFile}" in Notepad.`;
+        sendEvent('agent:chunk', { role: 'assistant', text: reply });
+        sendEvent('agent:done', {});
+        return reply;
+      }
+
+      const reply = `Found files matching "${query}":\n${result.result}`;
       sendEvent('agent:chunk', { role: 'assistant', text: reply });
       sendEvent('agent:done', {});
       return reply;
     }
 
-    const reply = `Found files matching "${query}":\n${result.result}`;
-    sendEvent('agent:chunk', { role: 'assistant', text: reply });
-    sendEvent('agent:done', {});
-    return reply;
-  }
+    for (const intercept of DIRECT_COMMANDS) {
+      if (!intercept.pattern.test(message)) continue;
 
-  for (const intercept of DIRECT_COMMANDS) {
-    if (!intercept.pattern.test(message)) continue;
+      if (intercept.isRam) {
+        // RAM needs two commands
+        sendEvent('agent:tool', { name: 'run_command', input: { command: 'RAM total' } });
+        const totalResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2)' });
+        const freeResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)' });
+        const total = totalResult.result?.trim() || '?';
+        const free = freeResult.result?.trim() || '?';
+        const reply = `You have ${total} GB of RAM total, with ${free} GB currently free.`;
+        sendEvent('agent:chunk', { role: 'assistant', text: reply });
+        sendEvent('agent:done', {});
+        return reply;
+      }
 
-    if (intercept.isRam) {
-      // RAM needs two commands
-      sendEvent('agent:tool', { name: 'run_command', input: { command: 'RAM total' } });
-      const totalResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2)' });
-      const freeResult  = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)' });
-      const total = totalResult.result?.trim() || '?';
-      const free  = freeResult.result?.trim()  || '?';
-      const reply = `You have ${total} GB of RAM total, with ${free} GB currently free.`;
+      sendEvent('agent:tool', { name: intercept.tool, input: intercept.args });
+      const result = await executeTool(intercept.tool, intercept.args);
+      const reply = result.success
+        ? intercept.format(result.result)
+        : `Failed: ${result.result}`;
       sendEvent('agent:chunk', { role: 'assistant', text: reply });
       sendEvent('agent:done', {});
       return reply;
     }
-
-    sendEvent('agent:tool', { name: intercept.tool, input: intercept.args });
-    const result = await executeTool(intercept.tool, intercept.args);
-    const reply = result.success
-      ? intercept.format(result.result)
-      : `Failed: ${result.result}`;
-    sendEvent('agent:chunk', { role: 'assistant', text: reply });
-    sendEvent('agent:done', {});
-    return reply;
-  }
   } // end !isMultiPartQuery
 
   // ── Direct intercept for GitHub repos ────────────────────────────────────
@@ -1042,7 +1042,7 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
         let toolArgs = {};
         try {
           toolArgs = JSON.parse(toolCall.function.arguments || '{}');
-        } catch (_) {}
+        } catch (_) { }
 
         sendEvent('agent:tool', { name: toolName, input: toolArgs });
 
@@ -1138,6 +1138,6 @@ export async function transcribeAudioBuffer(buffer, groqApiKey) {
   } finally {
     try {
       if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-    } catch (_) {}
+    } catch (_) { }
   }
 }

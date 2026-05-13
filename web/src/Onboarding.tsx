@@ -357,12 +357,12 @@ function ReadyFrame({ name, onNext, onBack }: { name: string; onNext: () => void
       <BackButton onClick={onBack} />
       <div className="fade-up" style={{ animationDelay: "0.05s", opacity: 0 }}>
         <p style={{ color: "rgba(255,255,255,0.4)", fontSize: "14px", marginBottom: "10px", fontFamily: "'DM Sans'" }}>Your buddy</p>
-        <h1 style={{ fontFamily: "'Syne',sans-serif", fontSize: "clamp(46px,5vw,68px)", fontWeight: 800, lineHeight: 1, letterSpacing: "-0.02em" }}>
-          is<br /><span style={{ color: "#4ade80" }}>ready</span>
+        <h1 style={{ fontFamily: "'Syne',sans-serif", fontSize: "clamp(46px,5vw,68px)", fontWeight: 800, lineHeight: 1, letterSpacing: "-0.02em", wordBreak: "break-word" }}>
+          {name ? <><span className="shimmer-name">{name}</span> it's<br /><span style={{ color: "#4ade80" }}>ready</span></> : <>is<br /><span style={{ color: "#4ade80" }}>ready</span></>}
         </h1>
       </div>
       <p className="fade-up" style={{ animationDelay: "0.15s", opacity: 0, color: "rgba(255,255,255,0.45)", fontSize: "14px", fontFamily: "'DM Sans'", lineHeight: 1.7 }}>
-        {name ? `${name}, what` : "What"} did I say? Your buddy is prepped — just download the app to get started.
+        What did I say? Your buddy is prepped — just download the app to get started.
       </p>
       <div className="fade-up" style={{ animationDelay: "0.25s", opacity: 0, display: "flex", gap: "8px" }}>
         {["Windows", "Linux"].map(p => (

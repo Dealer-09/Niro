@@ -420,29 +420,37 @@
     const inp = promptAddKey('gsk_... (backup key)', (val) => {
       if (val && !pendingGroqKeys.includes(val)) {
         pendingGroqKeys.push(val);
-        renderExtraKeys(groqExtraKeys, pendingGroqKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
-          pendingGroqKeys.splice(i, 1);
-          renderExtraKeys(groqExtraKeys, pendingGroqKeys.map((k, j) => `Key ${j + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), arguments.callee);
-        });
+        refreshGroqExtraKeys();
       }
     });
     groqExtraKeys.parentElement.appendChild(inp);
     inp.focus();
   });
 
+  function refreshGroqExtraKeys() {
+    renderExtraKeys(groqExtraKeys, pendingGroqKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
+      pendingGroqKeys.splice(i, 1);
+      refreshGroqExtraKeys();
+    });
+  }
+
   btnAddGeminiKey.addEventListener('click', () => {
     const inp = promptAddKey('AIza... (backup key)', (val) => {
       if (val && !pendingGeminiKeys.includes(val)) {
         pendingGeminiKeys.push(val);
-        renderExtraKeys(geminiExtraKeys, pendingGeminiKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
-          pendingGeminiKeys.splice(i, 1);
-          renderExtraKeys(geminiExtraKeys, pendingGeminiKeys.map((k, j) => `Key ${j + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), arguments.callee);
-        });
+        refreshGeminiExtraKeys();
       }
     });
     geminiExtraKeys.parentElement.appendChild(inp);
     inp.focus();
   });
+
+  function refreshGeminiExtraKeys() {
+    renderExtraKeys(geminiExtraKeys, pendingGeminiKeys.map((k, i) => `Key ${i + 2}: ${k.substring(0,4)}${'•'.repeat(Math.max(0,k.length-8))}${k.slice(-4)}`), (i) => {
+      pendingGeminiKeys.splice(i, 1);
+      refreshGeminiExtraKeys();
+    });
+  }
 
   // ─────────────────────────────────────────────
   // Settings Modal

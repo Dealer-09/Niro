@@ -2,8 +2,9 @@
 import { exec, spawn } from 'child_process';
 import { shell, Notification } from 'electron';
 import path from 'path';
+import os from 'os';
 import { promisify } from 'util';
-import { existsSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import screenshotDesktop from 'screenshot-desktop';
 import * as browserBridge from './tools/browser.js';
@@ -143,17 +144,90 @@ async function open_website({ url }) {
 // ─────────────────────────────────────────────────
 // Tool: type_text
 // ─────────────────────────────────────────────────
-async function type_text({ text }) {
-  if (!robot) {
-    return { success: false, result: 'robotjs not available — cannot type text. Install @jitsi/robotjs.' };
+async function type_text({ text, app }) {
+  // ── Primary: robotjs (fastest, zero-delay) ──────────────────────────────────
+  if (robot) {
+    try {
+      // If an app name is given, focus it first
+      if (app) await focus_window({ title: app });
+      await new Promise(r => setTimeout(r, 600));
+      robot.typeString(text);
+      return { success: true, result: `Typed: "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"` };
+    } catch (err) {
+      return { success: false, result: `Failed to type text: ${err.message}` };
+    }
   }
+
+  // ── Fallback: PowerShell SendKeys (no native deps needed) ──────────────────
   try {
-    // Delay so the target window regains focus
-    await new Promise(r => setTimeout(r, 500));
-    robot.typeString(text);
-    return { success: true, result: `Typed: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"` };
+    if (app) await focus_window({ title: app });
+    // Escape SendKeys special chars: + ^ % ~ ( ) { } [ ]
+    const escaped = text
+      .replace(/[+^%~(){}[\]]/g, c => `{${c}}`)
+      .replace(/\n/g, '{ENTER}')
+      .replace(/\r/g, '')
+      .replace(/\t/g, '{TAB}');
+
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 600; [System.Windows.Forms.SendKeys]::SendWait("${escaped.replace(/"/g, '`"')}");`;
+    const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+    await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 15000 });
+    return { success: true, result: `Typed: "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"` };
   } catch (err) {
-    return { success: false, result: `Failed to type text: ${err.message}` };
+    return { success: false, result: `Failed to type text (SendKeys): ${err.message}` };
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Tool: write_to_notepad
+// Opens Notepad pre-filled with content via a temp file.
+// Reliable, no robotjs needed, supports multi-line.
+// ─────────────────────────────────────────────────
+async function write_to_notepad({ content, filename }) {
+  try {
+    const safeName = (filename || `niro_note_${Date.now()}`).replace(/[<>:"/\\|?*]/g, '_');
+    const tempFile = path.join(os.tmpdir(), `${safeName}.txt`);
+    writeFileSync(tempFile, content, 'utf8');
+    spawn('notepad.exe', [tempFile], { detached: true, stdio: 'ignore' }).unref();
+    return { success: true, result: `Opened Notepad with your content.${filename ? ` (saved as ${safeName}.txt)` : ''}` };
+  } catch (err) {
+    return { success: false, result: `Failed to write to Notepad: ${err.message}` };
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Tool: write_to_app
+// Types text into any focused app using SendKeys.
+// Use this for apps that are already open.
+// ─────────────────────────────────────────────────
+async function write_to_app({ text, app, delay = 800 }) {
+  try {
+    // Focus target app window first
+    if (app) {
+      const focusResult = await focus_window({ title: app });
+      if (!focusResult.success) {
+        return { success: false, result: `Could not find window matching "${app}". Make sure the app is open.` };
+      }
+    }
+    // Wait for window to come to foreground
+    await new Promise(r => setTimeout(r, Math.min(delay, 2000)));
+
+    if (robot) {
+      robot.typeString(text);
+      return { success: true, result: `Typed content into ${app || 'active window'}.` };
+    }
+
+    // PowerShell SendKeys fallback
+    const escaped = text
+      .replace(/[+^%~(){}[\]]/g, c => `{${c}}`)
+      .replace(/\n/g, '{ENTER}')
+      .replace(/\r/g, '')
+      .replace(/\t/g, '{TAB}');
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("${escaped.replace(/"/g, '`"')}");`;
+    const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+    await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 15000 });
+    return { success: true, result: `Typed content into ${app || 'active window'}.` };
+  } catch (err) {
+    return { success: false, result: `Failed to write to app: ${err.message}` };
   }
 }
 
@@ -645,6 +719,8 @@ const TOOL_MAP = {
   open_app,
   open_website,
   type_text,
+  write_to_notepad,
+  write_to_app,
   press_key,
   mouse_click,
   run_command,

@@ -34,6 +34,16 @@ STRICT RULES — follow exactly:
 9. list_windows IS available — always use it when asked about open windows.
 10. take_screenshot IS available — always use it when asked to see the screen.
 
+WRITING TO APPS — use these tools:
+- "Write/type/draft [text] in Notepad" or "Open Notepad and write [content]" → write_to_notepad(content, filename?)
+  Example: "Write a meeting agenda in Notepad" → write_to_notepad({content: "Meeting Agenda:\n1. ..."})
+- "Type [text] in [app]" or "Write [text] in [already-open app]" → write_to_app(text, app)
+  Example: "Type Hello World in Notepad" → write_to_app({text: "Hello World", app: "Notepad"})
+- write_to_notepad ALWAYS opens Notepad with the content pre-filled. Prefer this over type_text for Notepad.
+- write_to_app focuses the named window then types — the app must already be open.
+- For Word, Notepad, or any text editor: use write_to_notepad for new content, write_to_app for an open window.
+- type_text types at the current cursor position without focusing any window.
+
 EMAIL — use send_email tool for all email requests:
 - "Send an email" → send_email(to, subject, body)
 - "Schedule an email" → send_email(to, subject, body, scheduleTime="2:40 PM")
@@ -176,11 +186,39 @@ const CORE_TOOLS = [
   },
   {
     name: 'type_text',
-    description: 'Type text at the current cursor position.',
+    description: 'Type text at the current cursor position in the active window. Use write_to_notepad for Notepad, write_to_app to target a specific open app.',
     parameters: {
       type: 'object',
-      properties: { text: { type: 'string', description: 'Text to type' } },
+      properties: {
+        text: { type: 'string', description: 'Text to type' },
+        app: { type: 'string', description: 'Optional: window title to focus before typing' },
+      },
       required: ['text'],
+    },
+  },
+  {
+    name: 'write_to_notepad',
+    description: 'Open Notepad pre-filled with text. Use for: "write X in Notepad", "open Notepad and type X", "draft X in Notepad", "create a note with X". Supports multi-line content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Full text content to write. Use \\n for new lines.' },
+        filename: { type: 'string', description: 'Optional filename (without extension). Defaults to niro_note.' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'write_to_app',
+    description: 'Type text into a specific open application window. Use for: "type X in [app]", "write X in [open app]". The app must already be running. Focuses the window then types.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Text to type into the app' },
+        app: { type: 'string', description: 'Window title or app name to target (e.g. "Notepad", "Word", "VSCode")' },
+        delay: { type: 'number', description: 'Milliseconds to wait after focusing window before typing (default 800)' },
+      },
+      required: ['text', 'app'],
     },
   },
   {
@@ -355,7 +393,7 @@ const DIRECT_COMMANDS = [
 const TERMINAL_TOOLS = new Set([
   'open_website', 'open_app', 'set_timer', 'show_notification',
   'focus_window', 'close_app', 'press_key', 'type_text', 'mouse_click',
-  'save_task',
+  'write_to_notepad', 'write_to_app', 'save_task',
 ]);
 /**
  * Initialize the LLM client with user-supplied credentials.
@@ -531,7 +569,9 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
   const wantsUptime = /\buptime\b/i.test(message);
   const multiInfoCount = [wantsIp, wantsName, wantsWin, wantsCpu, wantsRam, wantsDisk, wantsUptime].filter(Boolean).length;
 
-  if (multiInfoCount >= 2) {
+  // RAM always needs two values (total + free) — treat it as a combined command even alone.
+  // Any multi-metric query (2+ topics) is also batched into a single PowerShell call.
+  if (multiInfoCount >= 2 || wantsRam) {
     const cmds = [];
     const outputParts = [];
     if (wantsIp)     { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
@@ -542,9 +582,15 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
     if (wantsDisk)   { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
     if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
     const cmd = [...cmds, outputParts.join('; " | "; ')].join('; ');
-    sendEvent('agent:tool', { name: 'run_command', input: { command: 'system info' } });
+    const label = wantsRam && multiInfoCount === 1 ? 'RAM info' : 'system info';
+    sendEvent('agent:tool', { name: 'run_command', input: { command: label } });
     const result = await executeTool('run_command', { command: cmd });
-    const reply = result.success ? result.result.trim() : `Failed: ${result.result}`;
+    let reply = result.success ? result.result.trim() : `Failed: ${result.result}`;
+    // For RAM-only queries, format the output more naturally
+    if (wantsRam && multiInfoCount === 1 && result.success) {
+      const m = reply.match(/RAM:\s*([\d.]+)GB total,\s*([\d.]+)GB free/i);
+      if (m) reply = `You have ${m[1]} GB of RAM in total, and ${m[2]} GB is free.`;
+    }
     sendEvent('agent:chunk', { role: 'assistant', text: reply });
     sendEvent('agent:done', {});
     return reply;

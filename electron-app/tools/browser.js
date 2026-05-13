@@ -85,7 +85,6 @@ export async function runTask(task, onProgress = null) {
   // Lazy-import GoogleGenAI only when browser automation is actually used
   const { GoogleGenAI } = await import('@google/genai');
   const genAI = new GoogleGenAI({ apiKey: _geminiKey });
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
   const page = await getCDPPage();
 
   let iterations = 0;
@@ -121,15 +120,21 @@ export async function runTask(task, onProgress = null) {
 
     const state = { url, title, task, elements, iteration: iterations };
 
-    const promptParts = [
-      { text: BROWSER_AGENT_PROMPT },
-      { text: `State: ${JSON.stringify(state)}` },
-      { inlineData: { mimeType: 'image/jpeg', data: screenshot.toString('base64') } },
-      { text: `Task: ${task}` },
-    ];
-
-    const result = await model.generateContent(promptParts);
-    const responseText = result.response.text();
+    const result = await genAI.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: BROWSER_AGENT_PROMPT },
+            { text: `State: ${JSON.stringify(state)}` },
+            { inlineData: { mimeType: 'image/jpeg', data: screenshot.toString('base64') } },
+            { text: `Task: ${task}` },
+          ],
+        },
+      ],
+    });
+    const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     let plan;
     try {
@@ -164,7 +169,7 @@ export async function runTask(task, onProgress = null) {
     }
   }
 
-  throw new Error('Browser task timed out: reached maximum iterations (15)');
+  throw new Error(`Browser task timed out: reached maximum iterations (${maxIterations})`);
 }
 
 // ─── Direct helpers ───────────────────────────────────────────────────────────

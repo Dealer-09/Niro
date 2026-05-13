@@ -1,4 +1,4 @@
-import { useState, useEffect} from "react";
+import React, { useState, useEffect } from "react";
 import Mascot from "./components/Mascot";
 import { ProgressBar } from "./components/ProgressBar";
 const STYLES = `
@@ -302,16 +302,19 @@ function BuildingFrame({ onDone, onBack }: { onDone: () => void; onBack: () => v
 
   const [done, setDone] = useState<number[]>([]);
   const [started, setStarted] = useState(false);
+  const onDoneRef = React.useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
     const tStart = setTimeout(() => setStarted(true), 10);
     BUILDING_STEPS.forEach((_, i) => setTimeout(() => setDone(d => [...d, i]), 900 + i * 950));
-    const t = setTimeout(onDone, 900 + BUILDING_STEPS.length * 950 + 700);
+    const t = setTimeout(() => onDoneRef.current(), 900 + BUILDING_STEPS.length * 950 + 700);
     return () => {
       clearTimeout(t);
       clearTimeout(tStart);
     };
-  }, [onDone]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // empty deps — run once; onDone captured via ref above
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "28px", width: "100%" }}>
@@ -348,7 +351,7 @@ function BuildingFrame({ onDone, onBack }: { onDone: () => void; onBack: () => v
 
 // ── Ready Frame ────────────────────────────────────────────────────────────────
 function ReadyFrame({ name, onNext, onBack }: { name: string; onNext: () => void; onBack: () => void }) {
-  const [plat, setPlat] = useState("macOS");
+  const [plat, setPlat] = useState("Windows");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px", width: "100%" }}>
       <BackButton onClick={onBack} />

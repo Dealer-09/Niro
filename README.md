@@ -9,6 +9,7 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 - **Vision & Screenshots**: Gemini can take a screenshot and describe exactly what's on your screen
 - **Voice Commands**: Integrated Speech-to-Text using **Groq Whisper** (`whisper-large-v3`)
 - **System Automation**: Open apps, run PowerShell commands, set timers, manage windows, search files
+- **Writing Automation**: Write content directly into Notepad or any open app — no additional dependencies required
 - **AI Browser Automation**: Connects to your real Chrome browser via CDP — uses your actual logins and cookies
 - **Invisible Sensor UI**: Hover at the top of your screen to trigger the panel — stays out of your way
 - **Quick Tasks**: One-click preset task buttons for your most common actions
@@ -16,18 +17,41 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 
 ## 🛠️ Tech Stack
 
-### Desktop Agent
+### Desktop Agent (`electron-app/`)
 - **Framework**: Electron (Node.js, ESM)
 - **AI Providers**: Google Gemini (`@google/genai`) · Groq (OpenAI-compatible REST)
 - **Speech-to-Text**: Groq Whisper via multipart fetch
 - **Browser Automation**: Playwright (headless fallback) + Chrome CDP (real browser)
 - **System Automation**: PowerShell via `-EncodedCommand` (no quoting issues)
+- **Writing Automation**: Windows `System.Windows.Forms.SendKeys` (built-in, zero deps) + temp-file Notepad approach
 - **State Management**: `electron-store`
 
-### Web Landing Page
+### Web Landing Page (`web/`)
 - **Framework**: React 19 + Vite + TypeScript
 - **Styling**: Tailwind CSS v4
 - **Routing**: React Router v7
+
+## 📁 Repository Structure
+
+```
+CICADA3301_PS02/
+├── electron-app/       ← Desktop AI agent (Electron)
+│   ├── main.js         (Electron entry point, IPC, windows)
+│   ├── agent.js        (LLM orchestration, Groq + Gemini)
+│   ├── tools.js        (All tool implementations)
+│   ├── preload.cjs     (Secure contextBridge)
+│   ├── tools/          (browser.js, chrome.js — CDP automation)
+│   ├── renderer/       (Panel UI: HTML, CSS, JS)
+│   ├── assets/         (App icon)
+│   ├── build_assets/   (NSIS installer config)
+│   └── package.json
+│
+└── web/                ← Landing page (React + Vite)
+    ├── src/
+    │   ├── Onboarding.tsx
+    │   └── components/
+    └── package.json
+```
 
 ## 🚀 Getting Started
 
@@ -40,17 +64,18 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 
 1. **Clone the repo**:
    ```bash
-   git clone https://github.com/Dealer-09/CICADA3301_PS02.git
-   cd CICADA3301_PS02
+   git clone https://github.com/Dealer-09/Niro.git
+   cd Niro
    ```
 
-2. **Install dependencies & Run (Desktop Agent)**:
+2. **Run the Desktop Agent**:
    ```bash
+   cd electron-app
    npm install
    npm run dev
    ```
 
-3. **Install dependencies & Run (Web Landing Page)**:
+3. **Run the Web Landing Page** (optional):
    ```bash
    cd web
    npm install
@@ -62,10 +87,11 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 ## 📦 Building for Production
 
 ```bash
+cd electron-app
 npm run build
 ```
 
-The installer (`Niro Setup 1.0.1.exe`) and portable executable (`win-unpacked/Niro.exe`) will be in the `dist/` folder.
+The installer (`Niro Setup 1.0.1.exe`) and portable executable (`win-unpacked/Niro.exe`) will be in `electron-app/dist/`.
 
 ## 🔑 API Keys
 
@@ -90,41 +116,18 @@ User message
         └─ Model selects tools → agent executes → result returned
 ```
 
-### Available Tools (20+)
+### Available Tools (22+)
 
 | Category | Tools |
 |---|---|
 | **Apps** | `open_app`, `close_app`, `focus_window`, `list_windows` |
 | **Web** | `open_website`, `run_task` (AI browser), `browser_open/click/type/read/close` |
 | **System** | `run_command` (PowerShell), `search_files`, `take_screenshot` |
-| **Input*** | `type_text`, `press_key`, `mouse_click` |
+| **Writing** | `write_to_notepad`, `write_to_app`, `type_text`, `press_key`, `mouse_click` |
 | **Utilities** | `set_timer`, `show_notification`, `save_task`, `send_email` |
 
-*\* **Input Tools Note**: Keyboard and mouse automation requires the optional `@jitsi/robotjs` package. Install manually via `npm install @jitsi/robotjs` (requires Node native build tools).* 
+> **Writing Tools**: `write_to_notepad` and `write_to_app` work out of the box using Windows built-in `SendKeys` — no native compilation needed. `type_text`, `press_key`, and `mouse_click` optionally use `@jitsi/robotjs` for faster input, with automatic fallback if it's not installed.
 
-## 💬 Sample Prompts
-
-### Works on both providers
-```
-Open Notepad
-Open the YouTube channel @mkbhd in my browser
-Open the GitHub repo for microsoft/vscode
-Set a 5 minute timer called focus session
-Show me a notification saying "Time to drink water"
-What is my public IP address?
-How much RAM do I have and how much is free?
-How much disk space is free on C drive?
-Show me the top 5 processes using the most memory
-Find all PDF files on my desktop
-```
-
-### Gemini only (vision + multi-step)
-```
-Take a screenshot and tell me what's on my screen
-Show me my public IP, computer name, and Windows version all in one response
-Open Notepad and show me a notification saying it worked
-What is my CPU model and how many cores does it have?
-```
 
 ## 📄 License
 This project is part of the CICADA3301 series. All rights reserved.

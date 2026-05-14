@@ -256,6 +256,7 @@ function createTray() {
 // App Lifecycle
 // ─────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  app.setAppUserModelId('Niro'); // Required for Windows notifications
   createSensorWindow();
   createPanelWindow();
   createTray();

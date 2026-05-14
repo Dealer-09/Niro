@@ -109,7 +109,7 @@ const CORE_TOOLS = [
   },
   {
     name: 'set_timer',
-    description: 'Set a countdown timer with a notification when done. Use minutes for minute-based timers, seconds for second-based timers.',
+    description: 'Set a countdown timer with an automatic notification when done. DO NOT call show_notification manually for timers. Use minutes for minute-based timers, seconds for second-based timers.',
     parameters: {
       type: 'object',
       properties: {
@@ -346,10 +346,6 @@ const DIRECT_COMMANDS = [
     tool: 'run_command',
     args: { command: '(Invoke-RestMethod https://api.ipify.org)' },
     format: (r) => `Your public IP address is ${r.trim()}.`,
-  },
-  {
-    pattern: /\bhow much\s+(ram|memory)\b|\b(ram|memory)\s+(do i have|is free|total|usage|available)\b/i,
-    isRam: true,
   },
   {
     pattern: /\b(disk|drive|storage|space)\b.*\bC\b|\bC\b.*\b(disk|drive|storage|space)\b|\bhow much.*free.*disk\b|\bdisk.*free\b/i,
@@ -598,7 +594,7 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
 
   const history = historyToGeminiContents(chatHistory);
 
-  const chat = llmClient.chats.create({
+  let chat = llmClient.chats.create({
     model: currentModel,
     config: {
       systemInstruction: SYSTEM_PROMPT,
@@ -645,27 +641,28 @@ async function runGeminiAgent(message, chatHistory, sendEvent) {
           // Try rotating to next key first
           if (rotateToNextKey()) {
             sendEvent('agent:chunk', { role: 'assistant', text: `⏳ Key quota reached, switching to backup key...` });
-            // Rebuild the client with new key and retry just this API call
-            // Don't restart the whole agent — just continue the loop with new key
-            try {
-              if (toolResultParts && toolResultParts.length > 0) {
-                response = await chat.sendMessage({ message: toolResultParts });
-                toolResultParts = null;
-              } else if (nextMessage) {
-                response = await chat.sendMessage({ message: nextMessage });
-                nextMessage = null;
-              } else {
-                break;
-              }
-            } catch (retryErr) {
-              // If retry also fails, fall through to all-keys-exhausted message
-              const retryMsg = retryErr.message || '';
-              if (retryMsg.includes('PerDay') || retryMsg.includes('RESOURCE_EXHAUSTED')) {
-                // All keys exhausted
-              } else {
-                throw retryErr;
-              }
+            
+            // Try to extract current history so we don't lose context
+            let currentHistory = history;
+            if (typeof chat.getHistory === 'function') {
+              try { currentHistory = await chat.getHistory(); } catch(_) {}
             }
+            
+            // Rebuild the chat session with the new client and key
+            chat = llmClient.chats.create({
+              model: currentModel,
+              config: {
+                systemInstruction: SYSTEM_PROMPT,
+                tools: GEMINI_TOOLS,
+                temperature: 0.2,
+                maxOutputTokens: 8192,
+              },
+              history: currentHistory,
+            });
+            
+            // Retry the loop
+            maxIterations++;
+            continue;
           }
           // All keys exhausted
           const now = new Date();
@@ -869,7 +866,7 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
     if (wantsIp) { cmds.push('$ip=(Invoke-RestMethod https://api.ipify.org)'); outputParts.push('"IP: " + $ip'); }
     if (wantsName) { cmds.push('$name=$env:COMPUTERNAME'); outputParts.push('"Computer: " + $name'); }
     if (wantsWin) { cmds.push('$win=(Get-WmiObject Win32_OperatingSystem).Caption'); outputParts.push('"OS: " + $win'); }
-    if (wantsCpu) { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name'); outputParts.push('"CPU: " + $cpu'); }
+    if (wantsCpu) { cmds.push('$cpu=(Get-WmiObject Win32_Processor).Name + " — " + (Get-WmiObject Win32_Processor).NumberOfCores + " cores"'); outputParts.push('"CPU: " + $cpu'); }
     if (wantsRam) { cmds.push('$total=[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2); $free=[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)'); outputParts.push('"RAM: " + $total + "GB total, " + $free + "GB free"'); }
     if (wantsDisk) { cmds.push('$diskFree=[math]::Round((Get-PSDrive C).Free/1GB,1); $diskTotal=[math]::Round(((Get-PSDrive C).Used+(Get-PSDrive C).Free)/1GB,1)'); outputParts.push('"Disk C: " + $diskFree + "GB free of " + $diskTotal + "GB"'); }
     if (wantsUptime) { cmds.push('$uptime=[math]::Round(((Get-Date)-(gcim Win32_OperatingSystem).LastBootUpTime).TotalHours,1)'); outputParts.push('"Uptime: " + $uptime + " hours"'); }
@@ -951,19 +948,6 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
     for (const intercept of DIRECT_COMMANDS) {
       if (!intercept.pattern.test(message)) continue;
 
-      if (intercept.isRam) {
-        // RAM needs two commands
-        sendEvent('agent:tool', { name: 'run_command', input: { command: 'RAM total' } });
-        const totalResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).TotalVisibleMemorySize/1MB,2)' });
-        const freeResult = await executeTool('run_command', { command: '[math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB,2)' });
-        const total = totalResult.result?.trim() || '?';
-        const free = freeResult.result?.trim() || '?';
-        const reply = `You have ${total} GB of RAM total, with ${free} GB currently free.`;
-        sendEvent('agent:chunk', { role: 'assistant', text: reply });
-        sendEvent('agent:done', {});
-        return reply;
-      }
-
       sendEvent('agent:tool', { name: intercept.tool, input: intercept.args });
       const result = await executeTool(intercept.tool, intercept.args);
       const reply = result.success
@@ -1008,11 +992,17 @@ async function runGroqAgent(message, chatHistory, sendEvent) {
     try {
       data = await callGroq(messages, tools);
     } catch (err) {
-      if (err.message.includes('Rate limit') || err.message.includes('rate_limit')) {
-        sendEvent('agent:chunk', { role: 'assistant', text: '⏳ Rate limit hit, retrying in 15s...' });
-        await new Promise(r => setTimeout(r, 15000));
-        if (abortFlag) break;
-        data = await callGroq(messages, tools);
+      if (err.message.includes('Rate limit') || err.message.includes('rate_limit') || err.message.includes('429')) {
+        if (rotateToNextKey()) {
+          sendEvent('agent:chunk', { role: 'assistant', text: '⏳ Rate limit hit, switching to backup key...' });
+          maxIterations++;
+          continue;
+        } else {
+          sendEvent('agent:chunk', { role: 'assistant', text: '⏳ Rate limit hit, retrying in 15s...' });
+          await new Promise(r => setTimeout(r, 15000));
+          if (abortFlag) break;
+          data = await callGroq(messages, tools);
+        }
       } else {
         throw err;
       }

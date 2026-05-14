@@ -168,7 +168,7 @@ async function type_text({ text, app }) {
       .replace(/\r/g, '')
       .replace(/\t/g, '{TAB}');
 
-    const ps = `Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 600; [System.Windows.Forms.SendKeys]::SendWait("${escaped.replace(/"/g, '`"')}");`;
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 600; [System.Windows.Forms.SendKeys]::SendWait('${escaped.replace(/'/g, "''")}');`;
     const encoded = Buffer.from(ps, 'utf16le').toString('base64');
     await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 15000 });
     return { success: true, result: `Typed: "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"` };
@@ -222,7 +222,7 @@ async function write_to_app({ text, app, delay = 800 }) {
       .replace(/\n/g, '{ENTER}')
       .replace(/\r/g, '')
       .replace(/\t/g, '{TAB}');
-    const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("${escaped.replace(/"/g, '`"')}");`;
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escaped.replace(/'/g, "''")}');`;
     const encoded = Buffer.from(ps, 'utf16le').toString('base64');
     await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 15000 });
     return { success: true, result: `Typed content into ${app || 'active window'}.` };
@@ -688,7 +688,7 @@ async function send_email({ to, subject, body, scheduleTime }) {
     const safePass = gmailPass.replace(/'/g, "''");
     const safeTo = to.replace(/'/g, "''");
     const safeSubject = subject.replace(/'/g, "''");
-    const safeBody = body.replace(/'/g, "''").replace(/\n/g, '`n');
+    const safeBody = body.replace(/'/g, "''");
 
     const cmd = `
 $pass = ConvertTo-SecureString '${safePass}' -AsPlainText -Force

@@ -396,7 +396,7 @@ function DoneFrame({ name, onBack }: { name: string; onBack: () => void }) {
         Your buddy is ready. Download the app and I'll be right there when you open it.
       </p>
       <div className="fade-up" style={{ animationDelay: "0.28s", opacity: 0, display: "flex", gap: "12px" }}>
-       <a href="https://github.com/Dealer-09/Niro/releases/download/v1.01/Niro.Setup.1.0.1.exe" style={{ flex: 1 }}>
+       <a href="https://github.com/Dealer-09/Niro/releases/download/v1.0.2/Niro.Setup.1.0.2.exe" style={{ flex: 1 }}>
         <button className="niro-btn" style={{ width: "100%" }}>
           ↓ Download App
         </button>

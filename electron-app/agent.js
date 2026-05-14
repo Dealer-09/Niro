@@ -122,12 +122,12 @@ const CORE_TOOLS = [
   },
   {
     name: 'show_notification',
-    description: 'Show a Windows desktop notification.',
+    description: 'Show a Windows desktop notification. Use a SHORT title (3-5 words max). The message is the body text. Do NOT put the entire user request as the title.',
     parameters: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Notification title' },
-        message: { type: 'string', description: 'Notification body' },
+        title: { type: 'string', description: 'Short notification title (3-5 words). Example: "Reminder", "Task Done", "Timer Complete"' },
+        message: { type: 'string', description: 'Notification body text — the actual content/message to show.' },
       },
       required: ['title', 'message'],
     },
@@ -165,21 +165,21 @@ const CORE_TOOLS = [
   },
   {
     name: 'close_app',
-    description: 'Close a running app by process name.',
+    description: 'Close a running app by process name. Use lowercase partial name without .exe. Examples: "chrome", "notepad", "spotify", "discord".',
     parameters: {
       type: 'object',
-      properties: { name: { type: 'string', description: 'Process name to close' } },
+      properties: { name: { type: 'string', description: 'Partial process name, lowercase, no .exe. Examples: "chrome", "notepad", "code", "spotify"' } },
       required: ['name'],
     },
   },
   {
     name: 'search_files',
-    description: 'Search for files by name pattern.',
+    description: 'Search for files by name or extension on disk.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Filename pattern' },
-        directory: { type: 'string', description: 'Directory to search (default: user profile)' },
+        query: { type: 'string', description: 'Filename or extension to search. Examples: "resume" finds resume.docx, ".txt" finds all txt files, "report.pdf" finds that file. Do NOT include wildcards or full paths.' },
+        directory: { type: 'string', description: 'Absolute directory path to search in. Default: user profile root. Example: "C:\\Users\\John\\Desktop"' },
       },
       required: ['query'],
     },
@@ -216,7 +216,7 @@ const CORE_TOOLS = [
       properties: {
         text: { type: 'string', description: 'Text to type into the app' },
         app: { type: 'string', description: 'Window title or app name to target (e.g. "Notepad", "Word", "VSCode")' },
-        delay: { type: 'number', description: 'Milliseconds to wait after focusing window before typing (default 800)' },
+        delay: { type: 'number', description: 'Milliseconds (NOT seconds) to wait after focusing before typing. Default 800. Use 1500 for slow apps. Max 2000.' },
       },
       required: ['text', 'app'],
     },
@@ -237,10 +237,10 @@ const CORE_TOOLS = [
   },
   {
     name: 'press_key',
-    description: 'Press a key or shortcut. Examples: enter, ctrl+c, alt+tab.',
+    description: 'Press a keyboard key or shortcut. Use lowercase with + for combos.',
     parameters: {
       type: 'object',
-      properties: { key: { type: 'string', description: 'Key or combo' } },
+      properties: { key: { type: 'string', description: 'Key or combo in lowercase. Single: "enter", "escape", "tab", "space". Combos: "ctrl+c", "ctrl+v", "alt+tab", "ctrl+shift+t". Always lowercase.' } },
       required: ['key'],
     },
   },
@@ -268,12 +268,12 @@ const BROWSER_TOOLS = [
   },
   {
     name: 'browser_click',
-    description: 'Click an element on the current browser page.',
+    description: 'Click an element on the current browser page. Prefer "text" over "selector" when visible text is available.',
     parameters: {
       type: 'object',
       properties: {
-        selector: { type: 'string', description: 'CSS selector' },
-        text: { type: 'string', description: 'Visible text to click' },
+        selector: { type: 'string', description: 'CSS selector (use only if text is not available). Example: "#submit-btn", ".nav-link"' },
+        text: { type: 'string', description: 'PREFERRED: visible text of the element to click. Example: "Sign in", "Submit", "Compose". Use this first.' },
       },
       required: [],
     },

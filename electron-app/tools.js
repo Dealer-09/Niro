@@ -352,13 +352,26 @@ async function set_timer({ minutes, label, seconds }) {
     }
 
     const id = `timer_${Date.now()}`;
-    const timeout = setTimeout(() => {
-      const notif = new Notification({
-        title: '⏱ Timer Complete!',
-        body: label || `Your ${displayText} timer is done!`,
-        icon: getIconPath(),
-      });
-      notif.show();
+    const timeout = setTimeout(async () => {
+      // Try Electron native notification first
+      try {
+        const iconPath = getIconPath();
+        const notifOpts = { title: '⏱ Timer Complete!', body: label || `Your ${displayText} timer is done!` };
+        // Only attach icon if file actually exists (avoids silent failure on bad path)
+        if (existsSync(iconPath)) notifOpts.icon = iconPath;
+        const notif = new Notification(notifOpts);
+        notif.show();
+      } catch (e) {
+        console.error('[Niro] Timer notification (Electron) failed, using PowerShell fallback:', e.message);
+        // Fallback: PowerShell toast — guaranteed to appear on all Windows 10/11
+        try {
+          const safeTitle = 'Timer Complete!';
+          const safeBody = (label || `${displayText} timer done`).replace(/'/g, "''");
+          const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('${safeBody}', 'Niro — ${safeTitle}')`;
+          const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+          exec(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`);
+        } catch (_) {}
+      }
       activeTimers.delete(id);
     }, ms);
 

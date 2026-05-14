@@ -109,13 +109,13 @@ const CORE_TOOLS = [
   },
   {
     name: 'set_timer',
-    description: 'Set a countdown timer with an automatic notification when done. DO NOT call show_notification manually for timers. Use minutes for minute-based timers, seconds for second-based timers.',
+    description: 'Set a countdown timer with an automatic notification when done. DO NOT call show_notification manually. CRITICAL: map the user\'s unit exactly — "10 seconds" → seconds:10, minutes:0. "5 minutes" → minutes:5, seconds:0. Never put seconds into minutes.',
     parameters: {
       type: 'object',
       properties: {
-        minutes: { type: 'number', description: 'Duration in minutes (use 0 if using seconds)' },
-        seconds: { type: 'number', description: 'Duration in seconds (optional, use instead of minutes for short timers)' },
-        label: { type: 'string', description: 'Timer label' },
+        minutes: { type: 'number', description: 'MINUTES only. If user said "seconds", set this to 0. Example: "5 minutes" → 5. "30 seconds" → 0.' },
+        seconds: { type: 'number', description: 'SECONDS only. If user said "seconds", put the number here. Example: "30 seconds" → 30. "5 minutes" → 0 or omit.' },
+        label: { type: 'string', description: 'Timer label / name' },
       },
       required: ['label'],
     },

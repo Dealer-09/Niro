@@ -1,0 +1,69 @@
+/* ─── Global Design System — mirrors panel.css ──────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #000000;
+  --surface: #1a1a1a;
+  --surface2: #2c2c2c;
+  --border: rgba(255,255,255,0.08);
+  --border2: rgba(255,255,255,0.12);
+  --text: #ffffff;
+  --text-dim: #b3b3b3;
+  --text-faint: #808080;
+  --accent: #16EF75;
+  --accent-light: #6affa8;
+  --accent-dim: rgba(22, 239, 117, 0.15);
+  --accent-border: rgba(22, 239, 117, 0.3);
+  --error: #ef4444;
+  --tool-bg: rgba(22, 239, 117, 0.05);
+  --radius: 16px;
+  --radius-sm: 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+html, body, #app { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: none; border-radius: var(--radius-sm); cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  transition: all 0.15s ease; padding: 8px 14px;
+}
+.btn-primary { background: var(--accent); color: #000; }
+.btn-primary:hover { background: #6ee7a0; }
+.btn-ghost { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+.btn-ghost:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.btn-icon { background: transparent; color: var(--text-dim); padding: 6px; border-radius: 6px; }
+.btn-icon:hover { background: var(--surface2); color: var(--text); }
+
+/* Input */
+.input {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-family: inherit;
+  font-size: 13px; padding: 10px 12px; outline: none; resize: none;
+  transition: border-color 0.15s;
+}
+.input:focus { border-color: var(--border2); }
+.input::placeholder { color: var(--text-faint); }
+
+/* Fade animation */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.25s ease forwards; }
+
+/* Thinking pulse */
+@keyframes pulse { 0%,100% { opacity:0.3 } 50% { opacity:1 } }
+.pulse-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); animation: pulse 1.2s ease infinite; }
+.pulse-dot:nth-child(2) { animation-delay: 0.2s; }
+.pulse-dot:nth-child(3) { animation-delay: 0.4s; }

@@ -7,7 +7,7 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 - **Dual LLM Support**: Groq (fast, free tier) and Gemini (vision, multi-step reasoning) — user supplies their own API key, no hardcoded keys
 - **Smart Guardrails**: Common queries (IP, RAM, disk, file search, notifications) are handled instantly without hitting the LLM — saving tokens and rate limits
 - **Vision & Screenshots**: Gemini can take a screenshot and describe exactly what's on your screen
-- **Voice Commands**: Integrated Speech-to-Text using **Groq Whisper** (`whisper-large-v3`)
+- **Voice Commands**: Integrated Speech-to-Text using **Groq Whisper** (`whisper-large-v3-turbo`)
 - **System Automation**: Open apps, run PowerShell commands, set timers, manage windows, search files
 - **Writing Automation**: Write content directly into Notepad or any open app — no additional dependencies required
 - **AI Browser Automation**: Connects to your real Chrome browser via CDP — uses your actual logins and cookies
@@ -17,14 +17,17 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 
 ## 🛠️ Tech Stack
 
-### Desktop Agent (`electron-app/`)
-- **Framework**: Electron (Node.js, ESM)
-- **AI Providers**: Google Gemini (`@google/genai`) · Groq (OpenAI-compatible REST)
-- **Speech-to-Text**: Groq Whisper via multipart fetch
-- **Browser Automation**: Playwright (headless fallback) + Chrome CDP (real browser)
+### Desktop Agent (`tauri-app/`) — current
+- **Framework**: Tauri v2 (Rust backend + Svelte frontend, Vite)
+- **AI Providers**: Google Gemini (REST `generateContent`) · Groq (OpenAI-compatible REST), via `reqwest`
+- **Speech-to-Text**: Groq Whisper via multipart upload
+- **Browser Automation**: Chrome DevTools Protocol over WebSocket (Brave → Edge → Chrome, real browser)
 - **System Automation**: PowerShell via `-EncodedCommand` (no quoting issues)
-- **Writing Automation**: Windows `System.Windows.Forms.SendKeys` (built-in, zero deps) + temp-file Notepad approach
-- **State Management**: `electron-store`
+- **Writing Automation**: Windows `System.Windows.Forms.SendKeys` + temp-file Notepad approach; key/mouse input via `enigo`
+- **Secrets**: API keys + Gmail App Password stored in the OS keychain (Windows Credential Manager), not on disk
+- **State Management**: `tauri-plugin-store` (non-secret settings + chat history)
+
+> The original Electron implementation lives in `electron-app/` and is kept for reference only — the Tauri app is a 1:1 port and the active codebase.
 
 ### Web Landing Page (`web/`)
 - **Framework**: React 19 + Vite + TypeScript
@@ -35,16 +38,20 @@ Niro is a high-performance, desktop-native AI companion that lives quietly at th
 
 ```
 CICADA3301_PS02/
-├── electron-app/       ← Desktop AI agent (Electron)
-│   ├── main.js         (Electron entry point, IPC, windows)
-│   ├── agent.js        (LLM orchestration, Groq + Gemini)
-│   ├── tools.js        (All tool implementations)
-│   ├── preload.cjs     (Secure contextBridge)
-│   ├── tools/          (browser.js, chrome.js — CDP automation)
-│   ├── renderer/       (Panel UI: HTML, CSS, JS)
-│   ├── assets/         (App icon)
-│   ├── build_assets/   (NSIS installer config)
-│   └── package.json
+├── tauri-app/          ← Desktop AI agent (Tauri v2) — current
+│   ├── src/            (Svelte UI: Panel.svelte, Settings.svelte)
+│   ├── public/         (sensor.html — invisible hover strip)
+│   └── src-tauri/
+│       ├── src/
+│       │   ├── main.rs      (entry point, tray, windows, plugins)
+│       │   ├── commands.rs  (IPC command handlers)
+│       │   ├── agent.rs     (LLM orchestration, Groq + Gemini)
+│       │   ├── tools.rs     (all tool implementations)
+│       │   ├── browser.rs   (CDP browser automation)
+│       │   └── store.rs     (settings + keychain + chat history)
+│       └── tauri.conf.json
+│
+├── electron-app/       ← Legacy Electron implementation (reference only)
 │
 └── web/                ← Landing page (React + Vite)
     ├── src/
@@ -56,7 +63,8 @@ CICADA3301_PS02/
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Node.js**: v18 or higher
+- **Bun**: v1.3+ ([bun.sh](https://bun.sh)) — the workspace package manager/runtime
+- **Rust**: stable toolchain via [rustup](https://rustup.rs) + [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2, MSVC build tools)
 - **Windows**: Required (PowerShell automation is Windows-only)
 - **API Key**: Groq (free at [console.groq.com](https://console.groq.com)) or Gemini (free at [aistudio.google.com](https://aistudio.google.com))
 
@@ -68,18 +76,18 @@ CICADA3301_PS02/
    cd Niro
    ```
 
-2. **Run the Desktop Agent**:
+2. **Run the Desktop Agent** (requires the [Rust toolchain](https://rustup.rs) + [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)):
    ```bash
-   cd electron-app
-   npm install
-   npm run dev
+   cd tauri-app
+   bun install
+   bun run tauri dev
    ```
 
 3. **Run the Web Landing Page** (optional):
    ```bash
    cd web
-   npm install
-   npm run dev
+   bun install
+   bun run dev
    ```
 
 4. **First launch**: Hover at the top-center of your screen → click ⚙️ Settings → add your API key
@@ -87,15 +95,15 @@ CICADA3301_PS02/
 ## 📦 Building for Production
 
 ```bash
-cd electron-app
-npm run build
+cd tauri-app
+bun run tauri build
 ```
 
-The installer (`Niro Setup 1.0.1.exe`) and portable executable (`win-unpacked/Niro.exe`) will be in `electron-app/dist/`.
+The NSIS installer and `.exe` are emitted under `tauri-app/src-tauri/target/release/bundle/`.
 
 ## 🔑 API Keys
 
-Niro uses **your own API keys** — no keys are bundled with the app.
+Niro uses **your own API keys** — no keys are bundled with the app. Keys and the Gmail App Password are stored in the **OS keychain** (Windows Credential Manager), not in any plaintext file.
 
 | Provider | Where to get | Used for |
 |---|---|---|

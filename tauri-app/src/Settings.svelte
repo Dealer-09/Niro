@@ -126,9 +126,9 @@
       <div class="field-row">
         <label for="gemini-model">Model</label>
         <select id="gemini-model" bind:value={geminiModel}>
-          <option value="gemini-2.5-flash-preview-04-17">Gemini 2.5 Flash</option>
-          <option value="gemini-2.5-pro-preview-05-06">Gemini 2.5 Pro</option>
-          <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+          <option value="gemini-3.5-flash">Gemini 3.5 Flash (Latest)</option>
+          <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+          <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
         </select>
       </div>
       {/if}
@@ -154,7 +154,6 @@
         <select id="groq-model" bind:value={groqModel}>
           <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant (Fast, Recommended)</option>
           <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Powerful, Slower)</option>
-          <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
         </select>
       </div>
       {/if}

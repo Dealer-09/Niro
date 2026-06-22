@@ -20,15 +20,6 @@
 </head>
 <body>
   <div id="sensor"></div>
-  <script>
-    // Wait for Tauri's IPC to be injected, then listen for mouseenter
-    const sensor = document.getElementById('sensor');
-    sensor.addEventListener('mouseenter', () => {
-      // Use Tauri's internal IPC bridge (injected automatically into every webview)
-      if (window.__TAURI_INTERNALS__) {
-        window.__TAURI_INTERNALS__.invoke('sensor_hover');
-      }
-    });
-  </script>
+  <script src="/sensor.js"></script>
 </body>
 </html>

@@ -520,8 +520,15 @@ pub async fn run_groq_agent(
                     let content = if result.is_image.unwrap_or(false) {
                         "Screenshot taken. Image analysis not available on Groq — use Gemini.".to_string()
                     } else {
+                        // Truncate by CHARS, not bytes — slicing &raw[..500] panics if byte
+                        // 500 lands mid-codepoint (any non-ASCII tool output), and panic=abort
+                        // in release would crash the whole app.
                         let raw = &result.result;
-                        if raw.len() > 500 { format!("{}...(truncated)", &raw[..500]) } else { raw.clone() }
+                        if raw.chars().count() > 500 {
+                            format!("{}...(truncated)", raw.chars().take(500).collect::<String>())
+                        } else {
+                            raw.clone()
+                        }
                     };
 
                     // Terminal tool: return immediately, no LLM round-trip (matches Electron)
@@ -621,9 +628,32 @@ fn extract_google_query(msg: &str) -> String {
 }
 
 fn extract_github_repo(msg: &str) -> Option<String> {
-    regex::Regex::new(r"\b([\w.-]+)/([\w.-]+)\b").ok()
-        .and_then(|r| r.captures(msg))
-        .map(|c| format!("{}/{}", c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str()))
+    // 1. Explicit github.com/<owner>/<repo> URL — always trustworthy.
+    if let Some(c) = regex::Regex::new(r"(?i)github\.com/([\w.-]+)/([\w.-]+)")
+        .ok().and_then(|r| r.captures(msg))
+    {
+        return Some(format!("{}/{}", &c[1], &c[2]));
+    }
+
+    // 2. Bare "<owner>/<repo>" is ambiguous (matches "CI/CD", "TCP/IP", "and/or",
+    //    file paths…). Only treat it as a repo when the user clearly wants to
+    //    navigate, and skip well-known acronym pairs.
+    if !regex_test(msg, r"(?i)\b(open|clone|go to|goto|visit|launch|show)\b") {
+        return None;
+    }
+    const DENY: &[&str] = &[
+        "ci/cd", "and/or", "tcp/ip", "http/https", "n/a", "i/o", "w/o", "24/7",
+        "km/h", "either/or", "read/write", "input/output",
+    ];
+    let re = regex::Regex::new(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b").ok()?;
+    for c in re.captures_iter(msg) {
+        let pair = format!("{}/{}", c[1].to_lowercase(), c[2].to_lowercase());
+        if DENY.contains(&pair.as_str()) {
+            continue;
+        }
+        return Some(format!("{}/{}", &c[1], &c[2]));
+    }
+    None
 }
 
 // Extract notification text from user message — matches Electron's logic exactly:

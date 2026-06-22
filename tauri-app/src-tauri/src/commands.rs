@@ -51,8 +51,13 @@ pub async fn run_agent(
     let timers = state.timers.clone();
     let cfg = get_provider_config(&app);
 
+    // Persist the user turn BEFORE running the agent, so it is ordered ahead of
+    // the assistant reply. The frontend appends the assistant message on the
+    // agent:done event, which fires inside the agent run — appending the user
+    // turn afterward (as before) raced that, scrambling history order on reload.
+    let _ = append_chat_history(&app, "user", &message);
+
     // Spawn agent in background — it streams events back via app.emit()
-    let msg_for_history = message.clone(); // only clone needed: for append_chat_history
     let http = state.http.clone(); // cheap Arc clone
     tokio::spawn(async move {
         if cfg.provider == "groq" {
@@ -60,7 +65,6 @@ pub async fn run_agent(
         } else {
             run_gemini_agent(&app, &timers, &http, message, history, abort).await;
         }
-        let _ = append_chat_history(&app, "user", &msg_for_history);
     });
 
     Ok(())

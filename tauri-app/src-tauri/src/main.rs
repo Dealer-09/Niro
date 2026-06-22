@@ -49,6 +49,9 @@ fn main() {
         ])
         // ── Setup ─────────────────────────────────────────────────────────
         .setup(|app| {
+            // Move any plaintext secrets from older installs into the OS keychain.
+            store::migrate_secrets_to_keyring(app.handle());
+
             // Tray menu
             let show_item = MenuItem::with_id(app, "show", "Show Niro", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Niro", true, None::<&str>)?;

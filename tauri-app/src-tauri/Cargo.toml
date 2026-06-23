@@ -1,6 +1,6 @@
 [package]
 name = "niro"
-version = "1.0.3"
+version = "1.0.4"
 description = "Niro — AI Desktop Assistant"
 authors = ["Dealer-09"]
 edition = "2021"

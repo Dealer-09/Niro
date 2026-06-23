@@ -6,7 +6,7 @@
   import Settings from "./Settings.svelte";
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let messages = []; // { role: 'user'|'assistant'|'error'|'tool', text }
+  let messages = []; // { id, role: 'user'|'assistant'|'error'|'tool', text }
   let chatHistory = []; // { role: 'user'|'assistant', content: string } passed to Rust
   let input = "";
   let running = false;
@@ -19,6 +19,9 @@
   let tasks = [];
   let executingTool = false;  // true while a tool call is in flight
   let errorState = false;     // true for 3s after an agent error (red status bar)
+  let msgIdCounter = 0;       // stable unique IDs for {#each} keying
+
+  function nextMsgId() { return ++msgIdCounter; }
 
   // ── Listeners (Tauri events from Rust backend) ────────────────────────────
   let unlisteners = [];
@@ -37,7 +40,7 @@
         chatHistory = history;
         messages = history
           .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({ role: m.role, text: m.content }));
+          .map(m => ({ id: nextMsgId(), role: m.role, text: m.content }));
       }
     } catch (_) {}
 
@@ -46,11 +49,15 @@
       await listen("agent:chunk", ({ payload }) => {
         currentAssistantText += payload.text;
         if (currentStreamingId !== null) {
-          messages[currentStreamingId].text += payload.text;
-          messages = messages; // trigger reactivity
+          const idx = messages.findIndex(m => m.id === currentStreamingId);
+          if (idx >= 0) {
+            messages[idx].text += payload.text;
+            messages = messages; // trigger reactivity
+          }
         } else {
-          currentStreamingId = messages.length;
-          messages = [...messages, { role: "assistant", text: payload.text }];
+          const newId = nextMsgId();
+          currentStreamingId = newId;
+          messages = [...messages, { id: newId, role: "assistant", text: payload.text }];
         }
         scrollToBottom();
       }),
@@ -67,7 +74,7 @@
         const display = inputStr
           ? inputStr.substring(0, 40) + (inputStr.length > 40 ? "..." : "")
           : "";
-        messages = [...messages, { role: "tool", name: payload.name, display }];
+        messages = [...messages, { id: nextMsgId(), role: "tool", name: payload.name, display }];
         scrollToBottom();
       }),
     );
@@ -99,7 +106,7 @@
         currentStreamingId = null;
         executingTool = false;
         errorState = true;
-        messages = [...messages, { role: "error", text: payload.message }];
+        messages = [...messages, { id: nextMsgId(), role: "error", text: payload.message }];
         running = false;
         scrollToBottom();
         // Reset error state after 3s (matches Electron behavior)
@@ -136,7 +143,7 @@
     showEmpty = false;
     currentStreamingId = null;
     currentAssistantText = "";
-    messages = [...messages, { role: "user", text }];
+    messages = [...messages, { id: nextMsgId(), role: "user", text }];
     // Keep history to last 8 turns to manage token usage
     const historySlice = chatHistory.slice(-8);
     chatHistory = [...historySlice, { role: "user", content: text }];
@@ -145,7 +152,7 @@
     try {
       await invoke("run_agent", { message: text, history: historySlice });
     } catch (err) {
-      messages = [...messages, { role: "error", text: err }];
+      messages = [...messages, { id: nextMsgId(), role: "error", text: err }];
       running = false;
     }
   }
@@ -268,7 +275,7 @@
       </div>
     {/if}
 
-    {#each messages as msg, i (i)}
+    {#each messages as msg (msg.id)}
       {#if msg.role === "user"}
         <div class="msg msg-user fade-up">{msg.text}</div>
       {:else if msg.role === "assistant"}

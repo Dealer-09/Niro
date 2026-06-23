@@ -114,7 +114,7 @@ fn core_tool_schemas() -> Value {
         "parameters": { "type": "object", "properties": { "app": { "type": "string" } }, "required": ["app"] } },
       { "name": "open_website", "description": "Open a URL in the default browser.",
         "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] } },
-      { "name": "run_command", "description": "Run a PowerShell command. Use for system info, file operations.",
+      { "name": "run_command", "description": "Run a PowerShell command. Use for system info and read-only file operations. A safety guard blocks irreversible or dangerous commands (mass/recursive deletes, disk formatting, shutdown, disabling Defender/firewall, downloading-and-running remote scripts, registry edits, creating accounts/scheduled tasks) — never attempt those; tell the user to run them manually instead.",
         "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
       { "name": "set_timer",
         "description": "Set a countdown timer. CRITICAL: '10 seconds' → seconds:10, minutes:0. '5 minutes' → minutes:5, seconds:0. DO NOT call show_notification after.",
@@ -230,7 +230,19 @@ async fn execute_tool(app: &AppHandle, timers: &TimerMap, name: &str, args: &Val
     match name {
         "open_app"          => tools::open_app(&s("app")),
         "open_website"      => tools::open_website(app, &s("url")),
-        "run_command"       => tools::run_command(&s("command")),
+        "run_command"       => {
+            // Safety guard: screen the LLM-supplied command against the
+            // irreversible / RCE / security-disabling denylist before running.
+            let command = s("command");
+            match tools::screen_command(&command) {
+                Ok(()) => tools::run_command(&command),
+                Err(reason) => ToolResult::err(format!(
+                    "🛡️ Blocked by Niro's safety guard: this command could {reason}. \
+                     For safety the agent won't run it automatically — if you really \
+                     intend this, run it yourself in a terminal."
+                )),
+            }
+        }
         "show_notification" => tools::show_notification(app, &s("title"), &s("message")),
         "take_screenshot"   => tools::take_screenshot(),
         "search_files"      => {
@@ -903,22 +915,30 @@ pub async fn run_gemini_agent(
         if status == 429 || json["error"]["code"].as_u64() == Some(429) {
             let err_msg = json["error"]["message"].as_str().unwrap_or("");
             let is_daily = err_msg.contains("PerDay") || err_msg.contains("per_day") || err_msg.contains("GenerateRequestsPerDay");
+
+            // Always try rotating to the next key first — per-minute 429s
+            // are the most common rate limit, and backup keys are useless
+            // if we only rotate on daily limits.
+            key_index += 1;
+            if key_index < all_keys.len() {
+                emit_chunk(app, "⏳ Rate limit hit, switching to backup key...");
+                max_iter += 1;
+                continue 'outer;
+            }
+
+            // All keys exhausted — for daily limits, give up with a clear
+            // message; for per-minute limits, wait then reset to key 0.
             if is_daily {
-                key_index += 1;
-                if key_index < all_keys.len() {
-                    emit_chunk(app, "⏳ Key quota reached, switching to backup key...");
-                    max_iter += 1;
-                    continue 'outer;
-                }
                 let hours_left = 24u32.saturating_sub(chrono::Local::now().hour());
                 emit_error(app, &format!(
                     "⚠️ All Gemini API keys have reached their daily limit.\nQuota resets in ~{hours_left}h.\n💡 Add more keys in ⚙️ Settings or switch to Groq."
                 ));
                 return;
             }
-            emit_chunk(app, "⏳ Rate limit hit, retrying in 15s...");
+            emit_chunk(app, "⏳ Rate limit hit on all keys, retrying in 15s...");
             tokio::time::sleep(Duration::from_secs(15)).await;
             if abort.load(Ordering::Relaxed) { return; }
+            key_index = 0;
             max_iter += 1;
             continue 'outer;
         }

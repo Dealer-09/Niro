@@ -100,14 +100,20 @@ fn main() {
             // 6px tall, centered at top of screen, transparent, always on top
             let panel_width = 380.0;
             let sensor_height = 6.0;
-            let monitor = app.primary_monitor()?.unwrap_or_else(|| {
-                app.available_monitors()
-                    .unwrap()
-                    .into_iter()
-                    .next()
-                    .unwrap()
-            });
-            let screen_width = monitor.size().width as f64 / monitor.scale_factor();
+            // Gracefully handle zero monitors / RDP / headless — instead of
+            // panicking (panic=abort in release!) fall back to a sensible
+            // default screen width so the sensor still appears centered-ish.
+            let screen_width = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    app.available_monitors()
+                        .ok()
+                        .and_then(|m| m.into_iter().next())
+                })
+                .map(|m| m.size().width as f64 / m.scale_factor())
+                .unwrap_or(1920.0);
             let sensor_x = ((screen_width - panel_width) / 2.0).round();
 
             let _sensor =
@@ -138,7 +144,7 @@ fn main() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "panel" {
-                    window.hide().unwrap();
+                    let _ = window.hide();
                     api.prevent_close();
                 }
             }

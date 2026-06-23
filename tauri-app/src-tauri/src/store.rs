@@ -29,7 +29,19 @@ fn write_secret(account: &str, value: &str) -> bool {
         return true;
     }
     match keyring::Entry::new(KEYRING_SERVICE, account) {
-        Ok(entry) => entry.set_password(value).is_ok(),
+        Ok(entry) => {
+            if entry.set_password(value).is_err() {
+                return false;
+            }
+            // Read-back verification: confirm the keychain durably stored the
+            // value before the caller blanks the on-disk copy. A flaky/locked
+            // vault that reports write-success but isn't readable would
+            // otherwise destroy the user's key forever.
+            match entry.get_password() {
+                Ok(readback) if readback == value => true,
+                _ => false,
+            }
+        }
         Err(_) => false,
     }
 }
@@ -87,13 +99,25 @@ pub fn get_provider_config(app: &AppHandle) -> ProviderConfig {
     // in the store (pre-migration installs). migrate_secrets_to_keyring() moves
     // those into the keychain and blanks them from disk on startup.
     let gemini_key = secret_get("gemini_key").unwrap_or(cfg.gemini_key);
-    let gemini_extra_keys = secret_get("gemini_extra_keys")
-        .and_then(|j| serde_json::from_str(&j).ok())
-        .unwrap_or(cfg.gemini_extra_keys);
+    // Parse extra_keys JSON carefully — a parse failure must fall back to the
+    // on-disk value, never silently drop the user's backup keys.
+    let gemini_extra_keys = match secret_get("gemini_extra_keys") {
+        Some(j) => serde_json::from_str::<Vec<String>>(&j)
+            .unwrap_or_else(|_| {
+                eprintln!("[Niro] WARNING: gemini_extra_keys JSON parse failed, using on-disk fallback");
+                cfg.gemini_extra_keys.clone()
+            }),
+        None => cfg.gemini_extra_keys,
+    };
     let groq_key = secret_get("groq_key").unwrap_or(cfg.groq_key);
-    let groq_extra_keys = secret_get("groq_extra_keys")
-        .and_then(|j| serde_json::from_str(&j).ok())
-        .unwrap_or(cfg.groq_extra_keys);
+    let groq_extra_keys = match secret_get("groq_extra_keys") {
+        Some(j) => serde_json::from_str::<Vec<String>>(&j)
+            .unwrap_or_else(|_| {
+                eprintln!("[Niro] WARNING: groq_extra_keys JSON parse failed, using on-disk fallback");
+                cfg.groq_extra_keys.clone()
+            }),
+        None => cfg.groq_extra_keys,
+    };
     let gmail_pass = secret_get("gmail_pass").unwrap_or(cfg.gmail_pass);
 
     // Apply defaults — default provider is 'groq' to match Electron

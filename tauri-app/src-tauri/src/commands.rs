@@ -152,38 +152,56 @@ pub async fn transcribe_audio(
     audio_bytes: Vec<u8>,
 ) -> Result<String, String> {
     let cfg = get_provider_config(&app);
-    if cfg.groq_key.is_empty() {
+    // Gather all available Groq keys for rotation (primary + extras).
+    let all_keys: Vec<String> = std::iter::once(cfg.groq_key.clone())
+        .chain(cfg.groq_extra_keys.iter().cloned())
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    if all_keys.is_empty() {
         return Err(
             "A Groq API key is required for voice transcription. Add one in ⚙️ Settings.".into(),
         );
     }
 
-    // Build multipart form for Groq Whisper
-    let form = reqwest::multipart::Form::new()
-        .text("model", "whisper-large-v3-turbo")
-        .text("response_format", "text")
-        .part(
-            "file",
-            reqwest::multipart::Part::bytes(audio_bytes)
-                .file_name("audio.webm")
-                .mime_str("audio/webm")
-                .map_err(|e| e.to_string())?,
-        );
+    let mut last_err = String::new();
+    for api_key in &all_keys {
+        // Build multipart form for Groq Whisper
+        let form = reqwest::multipart::Form::new()
+            .text("model", "whisper-large-v3-turbo")
+            .text("response_format", "text")
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(audio_bytes.clone())
+                    .file_name("audio.webm")
+                    .mime_str("audio/webm")
+                    .map_err(|e| e.to_string())?,
+            );
 
-    let resp = state.http
-        .post("https://api.groq.com/openai/v1/audio/transcriptions")
-        .bearer_auth(&cfg.groq_key)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        let resp = state.http
+            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .bearer_auth(api_key)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
-    if !resp.status().is_success() {
-        let txt = resp.text().await.unwrap_or_default();
-        return Err(format!("Whisper API error: {txt}"));
+        if resp.status() == 429 {
+            // Rate limited — try next key
+            last_err = "Rate limited (429)".into();
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            last_err = format!("Whisper API error: {txt}");
+            continue;
+        }
+
+        return resp.text().await.map_err(|e| e.to_string());
     }
 
-    resp.text().await.map_err(|e| e.to_string())
+    Err(format!("All Groq keys exhausted for transcription: {last_err}"))
 }
 
 // ── quit_app ───────────────────────────────────────────────────────────────

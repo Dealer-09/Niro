@@ -101,6 +101,14 @@ async fn eval_js(js: &str) -> Result<String, String> {
     Ok(result["result"]["value"].as_str().unwrap_or("").to_string())
 }
 
+// ── JS string literal helper ───────────────────────────────────────────────
+// Produce a valid JS string literal (with quotes) from arbitrary Rust &str.
+// Uses serde_json to get correct Unicode escaping — Rust's {:?} Debug format
+// emits Rust-style escapes (\n as literal backslash-n etc.) which break JS.
+fn js_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
 // ── Public browser tools ───────────────────────────────────────────────────
 
 pub async fn browser_open(url: &str) -> ToolResult {
@@ -119,14 +127,20 @@ pub async fn browser_click(selector: Option<&str>, text: Option<&str>) -> ToolRe
     if let Err(e) = ensure_cdp().await { return ToolResult::err(e); }
 
     let js = match (selector, text) {
-        (_, Some(txt)) => format!(
-            r#"(()=>{{const tags='a,button,[role="button"],input[type="submit"],input[type="button"]';
-            const el=[...document.querySelectorAll(tags)].find(e=>e.innerText?.trim().toLowerCase().includes({0:?}.toLowerCase())||e.value?.toLowerCase().includes({0:?}.toLowerCase()));
-            if(el){{el.click();return'Clicked: '+(el.innerText||el.value||{0:?})}}return'Not found: '+{0:?}}})()
-            "#, txt),
-        (Some(sel), _) => format!(
-            r#"(()=>{{const el=document.querySelector({0:?});if(el){{el.click();return'Clicked: '+{0:?}}}return'Not found: '+{0:?}}})()
-            "#, sel),
+        (_, Some(txt)) => {
+            let v = js_str(txt);
+            format!(
+                r#"(()=>{{const tags='a,button,[role="button"],input[type="submit"],input[type="button"]';
+                const el=[...document.querySelectorAll(tags)].find(e=>e.innerText?.trim().toLowerCase().includes({v}.toLowerCase())||e.value?.toLowerCase().includes({v}.toLowerCase()));
+                if(el){{el.click();return'Clicked: '+(el.innerText||el.value||{v})}}return'Not found: '+{v}}})()"#,
+                v = v)
+        }
+        (Some(sel), _) => {
+            let v = js_str(sel);
+            format!(
+                r#"(()=>{{const el=document.querySelector({v});if(el){{el.click();return'Clicked: '+{v}}}return'Not found: '+{v}}})()"#,
+                v = v)
+        }
         _ => return ToolResult::err("Provide selector or text"),
     };
 
@@ -139,16 +153,18 @@ pub async fn browser_click(selector: Option<&str>, text: Option<&str>) -> ToolRe
 pub async fn browser_type(selector: &str, text: &str) -> ToolResult {
     if let Err(e) = ensure_cdp().await { return ToolResult::err(e); }
 
+    let sel_js = js_str(selector);
+    let text_js = js_str(text);
     let js = format!(
         r#"(()=>{{
-        const el=document.querySelector({sel:?})||[...document.querySelectorAll('input,textarea,*[contenteditable]')]
-            .find(e=>e.placeholder?.toLowerCase().includes({sel:?}.toLowerCase())||e.name?.includes({sel:?}));
-        if(!el)return'Input not found: '+{sel:?};
-        el.focus();el.value={text:?};
+        const el=document.querySelector({sel})||[...document.querySelectorAll('input,textarea,*[contenteditable]')]
+            .find(e=>e.placeholder?.toLowerCase().includes({sel}.toLowerCase())||e.name?.includes({sel}));
+        if(!el)return'Input not found: '+{sel};
+        el.focus();el.value={text};
         el.dispatchEvent(new Event('input',{{bubbles:true}}));
         el.dispatchEvent(new Event('change',{{bubbles:true}}));
-        return'Typed into '+{sel:?}}})()
-        "#, sel = selector, text = text);
+        return'Typed into '+{sel}}})()"#,
+        sel = sel_js, text = text_js);
 
     match eval_js(&js).await {
         Ok(r) => ToolResult::ok(r),
@@ -160,9 +176,12 @@ pub async fn browser_read(selector: Option<&str>) -> ToolResult {
     if let Err(e) = ensure_cdp().await { return ToolResult::err(e); }
 
     let js = match selector {
-        Some(sel) => format!(
-            r#"(()=>{{const el=document.querySelector({0:?});return el?el.innerText||el.value||el.textContent:'Not found: '+{0:?}}})()
-            "#, sel),
+        Some(sel) => {
+            let v = js_str(sel);
+            format!(
+                r#"(()=>{{const el=document.querySelector({v});return el?el.innerText||el.value||el.textContent:'Not found: '+{v}}})()"#,
+                v = v)
+        }
         None => "document.title+'\\n---\\n'+document.body.innerText.slice(0,2000)".into(),
     };
 

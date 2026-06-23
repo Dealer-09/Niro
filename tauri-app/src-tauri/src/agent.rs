@@ -223,7 +223,7 @@ fn gemini_tool_schemas() -> Value {
 }
 
 // ── Execute tool ──────────────────────────────────────────────────────────
-async fn execute_tool(app: &AppHandle, timers: &TimerMap, name: &str, args: &Value) -> ToolResult {
+async fn execute_tool(app: &AppHandle, timers: &TimerMap, abort: &AbortFlag, name: &str, args: &Value) -> ToolResult {
     let s = |k: &str| args[k].as_str().unwrap_or("").to_string();
     let n = |k: &str| args[k].as_f64().unwrap_or(0.0);
 
@@ -235,7 +235,9 @@ async fn execute_tool(app: &AppHandle, timers: &TimerMap, name: &str, args: &Val
             // irreversible / RCE / security-disabling denylist before running.
             let command = s("command");
             match tools::screen_command(&command) {
-                Ok(()) => tools::run_command(&command),
+                // Abortable: stopping the agent kills the child process instead
+                // of waiting for a slow PowerShell command to finish on its own.
+                Ok(()) => tools::run_command_abortable(&command, abort).await,
                 Err(reason) => ToolResult::err(format!(
                     "🛡️ Blocked by Niro's safety guard: this command could {reason}. \
                      For safety the agent won't run it automatically — if you really \
@@ -408,7 +410,7 @@ pub async fn run_groq_agent(
         .iter().filter(|&&x| x).count();
 
     if multi_count >= 2 {
-        let reply = run_sysinfo_batch(app, timers, wants_ip, wants_name, wants_win, wants_cpu, wants_ram, wants_disk, wants_uptime).await;
+        let reply = run_sysinfo_batch(app, timers, &abort, wants_ip, wants_name, wants_win, wants_cpu, wants_ram, wants_disk, wants_uptime).await;
         emit_chunk(app, &reply);
         emit_done(app);
         return;
@@ -419,7 +421,7 @@ pub async fn run_groq_agent(
     // Matches Electron's isMultiPartQuery check exactly
     let is_multi_part = msg.to_lowercase().split(" and ").count() > 3;
     if !is_multi_part {
-        let direct = try_direct_command(app, timers, msg).await;
+        let direct = try_direct_command(app, timers, &abort, msg).await;
         if let Some(reply) = direct {
             emit_chunk(app, &reply);
             emit_done(app);
@@ -429,7 +431,7 @@ pub async fn run_groq_agent(
 
     // ── 8. File search intercept ───────────────────────────────────────────
     if regex_test(msg, r"(?i)\b(find|search|look for|locate)\b.*\bfile[s]?\b|\bfile[s]?\b.*\b(find|search|on desktop|in downloads|in documents)\b") {
-        if let Some(reply) = try_file_search(app, timers, msg).await {
+        if let Some(reply) = try_file_search(app, timers, &abort, msg).await {
             emit_chunk(app, &reply);
             emit_done(app);
             return;
@@ -527,7 +529,7 @@ pub async fn run_groq_agent(
                     ).unwrap_or(json!({}));
 
                     emit_tool(app, tool_name, tool_args.clone());
-                    let result = execute_tool(app, timers, tool_name, &tool_args).await;
+                    let result = execute_tool(app, timers, &abort, tool_name, &tool_args).await;
 
                     let content = if result.is_image.unwrap_or(false) {
                         "Screenshot taken. Image analysis not available on Groq — use Gemini.".to_string()
@@ -571,27 +573,27 @@ pub async fn run_groq_agent(
 
 // ── Regex cache — compile each pattern once, reuse forever ─────────────────
 // Before: ~40 regex compilations per agent call. After: 0 (except first run).
-fn regex_test(text: &str, pattern: &str) -> bool {
-    use once_cell::sync::Lazy;
-    use parking_lot::Mutex;
-    use std::collections::HashMap;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 
-    static CACHE: Lazy<Mutex<HashMap<String, regex::Regex>>> =
-        Lazy::new(|| Mutex::new(HashMap::with_capacity(32)));
+static REGEX_CACHE: Lazy<Mutex<HashMap<String, Arc<regex::Regex>>>> =
+    Lazy::new(|| Mutex::new(HashMap::with_capacity(32)));
 
-    let cache = CACHE.lock();
-    if let Some(re) = cache.get(pattern) {
-        return re.is_match(text);
+/// Fetch a compiled regex from the shared cache, compiling+inserting on miss.
+/// Returns None only if the pattern itself is invalid. Used by both regex_test
+/// and the capture-based extractor helpers so none of them recompile per call.
+fn cached_regex(pattern: &str) -> Option<Arc<regex::Regex>> {
+    if let Some(re) = REGEX_CACHE.lock().get(pattern) {
+        return Some(re.clone());
     }
-    drop(cache); // release lock before compiling
+    let re = Arc::new(regex::Regex::new(pattern).ok()?);
+    REGEX_CACHE.lock().insert(pattern.to_string(), re.clone());
+    Some(re)
+}
 
-    let re = match regex::Regex::new(pattern) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let result = re.is_match(text);
-    CACHE.lock().insert(pattern.to_string(), re);
-    result
+fn regex_test(text: &str, pattern: &str) -> bool {
+    cached_regex(pattern).map_or(false, |re| re.is_match(text))
 }
 
 // ── URL encode — proper UTF-8 percent encoding ─────────────────────────────
@@ -602,26 +604,26 @@ fn url_encode(s: &str) -> String {
 
 // ── Groq helper: query extractors ─────────────────────────────────────────
 fn extract_spotify_query(msg: &str) -> String {
-    regex::Regex::new(r"(?i)\bplay\s+(.+?)(?:\s+by\s+(.+?))?(?:\s+on\s+spotify)?$")
-        .ok().and_then(|r| r.captures(msg))
+    cached_regex(r"(?i)\bplay\s+(.+?)(?:\s+by\s+(.+?))?(?:\s+on\s+spotify)?$")
+        .and_then(|r| r.captures(msg))
         .map(|c| {
             let song = c.get(1).map_or("", |m| m.as_str());
             let artist = c.get(2).map_or("", |m| m.as_str());
             if artist.is_empty() { song.trim().to_string() } else { format!("{} {}", song.trim(), artist.trim()) }
         })
         .or_else(|| {
-            regex::Regex::new(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on\s+)?spotify")
-                .ok().and_then(|r| r.captures(msg))
+            cached_regex(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on\s+)?spotify")
+                .and_then(|r| r.captures(msg))
                 .map(|c| c.get(1).map_or("", |m| m.as_str()).trim().to_string())
         })
         .unwrap_or_default()
 }
 
 fn extract_yt_query(msg: &str) -> String {
-    regex::Regex::new(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube")
-        .ok().and_then(|r| r.captures(msg))
+    cached_regex(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+youtube")
+        .and_then(|r| r.captures(msg))
         .or_else(|| {
-            regex::Regex::new(r"(?i)\byoutube\b.*\bsearch\s+(?:for\s+)?(.+)").ok()
+            cached_regex(r"(?i)\byoutube\b.*\bsearch\s+(?:for\s+)?(.+)")
                 .and_then(|r| r.captures(msg))
         })
         .map(|c| c.get(1).map_or("", |m| m.as_str()).trim().to_string())
@@ -629,10 +631,10 @@ fn extract_yt_query(msg: &str) -> String {
 }
 
 fn extract_google_query(msg: &str) -> String {
-    regex::Regex::new(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+google")
-        .ok().and_then(|r| r.captures(msg))
+    cached_regex(r"(?i)\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+google")
+        .and_then(|r| r.captures(msg))
         .or_else(|| {
-            regex::Regex::new(r"(?i)\bgoogle\b.*\bsearch\s+(?:for\s+)?(.+)").ok()
+            cached_regex(r"(?i)\bgoogle\b.*\bsearch\s+(?:for\s+)?(.+)")
                 .and_then(|r| r.captures(msg))
         })
         .map(|c| c.get(1).map_or("", |m| m.as_str()).trim().to_string())
@@ -641,8 +643,8 @@ fn extract_google_query(msg: &str) -> String {
 
 fn extract_github_repo(msg: &str) -> Option<String> {
     // 1. Explicit github.com/<owner>/<repo> URL — always trustworthy.
-    if let Some(c) = regex::Regex::new(r"(?i)github\.com/([\w.-]+)/([\w.-]+)")
-        .ok().and_then(|r| r.captures(msg))
+    if let Some(c) = cached_regex(r"(?i)github\.com/([\w.-]+)/([\w.-]+)")
+        .and_then(|r| r.captures(msg))
     {
         return Some(format!("{}/{}", &c[1], &c[2]));
     }
@@ -657,7 +659,7 @@ fn extract_github_repo(msg: &str) -> Option<String> {
         "ci/cd", "and/or", "tcp/ip", "http/https", "n/a", "i/o", "w/o", "24/7",
         "km/h", "either/or", "read/write", "input/output",
     ];
-    let re = regex::Regex::new(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b").ok()?;
+    let re = cached_regex(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b")?;
     for c in re.captures_iter(msg) {
         let pair = format!("{}/{}", c[1].to_lowercase(), c[2].to_lowercase());
         if DENY.contains(&pair.as_str()) {
@@ -674,25 +676,24 @@ fn extract_github_repo(msg: &str) -> Option<String> {
 // 3. Strip common notification keywords from the message
 fn extract_notification_text(msg: &str) -> String {
     // Quoted text (single or double quotes)
-    if let Some(caps) = regex::Regex::new(r#"["']([^"']+)["']"#).ok()
+    if let Some(caps) = cached_regex(r#"["']([^"']+)["']"#)
         .and_then(|r| r.captures(msg)) {
         return caps.get(1).map_or("", |m| m.as_str()).to_string();
     }
     // "saying X" pattern
-    if let Some(caps) = regex::Regex::new(r"(?i)\bsaying\s+(.+?)$").ok()
+    if let Some(caps) = cached_regex(r"(?i)\bsaying\s+(.+?)$")
         .and_then(|r| r.captures(msg)) {
         return caps.get(1).map_or("", |m| m.as_str()).trim().to_string();
     }
     // Strip notification keywords and return what's left
-    regex::Regex::new(r"(?i)(show|send|display|give me|pop up)\s+(a\s+)?notification(\s+saying)?")
-        .ok()
+    cached_regex(r"(?i)(show|send|display|give me|pop up)\s+(a\s+)?notification(\s+saying)?")
         .map(|r| r.replace_all(msg, "").trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Done".to_string())
 }
 
 // ── Direct command table (matches Electron DIRECT_COMMANDS) ───────────────
-async fn try_direct_command(app: &AppHandle, timers: &TimerMap, msg: &str) -> Option<String> {
+async fn try_direct_command(app: &AppHandle, timers: &TimerMap, abort: &AbortFlag, msg: &str) -> Option<String> {
     struct Cmd { pattern: &'static str, command: &'static str, prefix: &'static str }
     let cmds = [
         Cmd { pattern: r"(?i)\b(public\s+)?ip(\s+address)?\b",
@@ -723,7 +724,7 @@ async fn try_direct_command(app: &AppHandle, timers: &TimerMap, msg: &str) -> Op
     for cmd in &cmds {
         if regex_test(msg, cmd.pattern) {
             emit_tool(app, "run_command", json!({ "command": cmd.command }));
-            let result = execute_tool(app, timers, "run_command",
+            let result = execute_tool(app, timers, abort, "run_command",
                 &json!({ "command": cmd.command })).await;
             return Some(if result.success {
                 format!("{}{}", cmd.prefix, result.result.trim())
@@ -737,7 +738,7 @@ async fn try_direct_command(app: &AppHandle, timers: &TimerMap, msg: &str) -> Op
 
 // ── Sysinfo batch (matches Electron multi-info batching) ──────────────────
 async fn run_sysinfo_batch(
-    app: &AppHandle, timers: &TimerMap,
+    app: &AppHandle, timers: &TimerMap, abort: &AbortFlag,
     ip: bool, name: bool, win: bool, cpu: bool, ram: bool, disk: bool, uptime: bool
 ) -> String {
     let mut cmds: Vec<&str> = vec![];
@@ -754,15 +755,15 @@ async fn run_sysinfo_batch(
     let joined_parts = parts.join("; \" | \"; ");
     let full_cmd = format!("{}; {}", cmds.join("; "), joined_parts);
     emit_tool(app, "run_command", json!({ "command": "system info" }));
-    let result = execute_tool(app, timers, "run_command", &json!({ "command": full_cmd })).await;
+    let result = execute_tool(app, timers, abort, "run_command", &json!({ "command": full_cmd })).await;
     if result.success { result.result.trim().to_string() } else { format!("Failed: {}", result.result) }
 }
 
 // ── File search intercept ─────────────────────────────────────────────────
 // Matches Electron lines 889-945: search, open first file, show notification combo
-async fn try_file_search(app: &AppHandle, timers: &TimerMap, msg: &str) -> Option<String> {
-    let ext_re = regex::Regex::new(r"(?i)\b(pdf|docx?|txt|xlsx?|png|jpg|jpeg|mp4|mp3|zip)\b").ok()?;
-    let name_re = regex::Regex::new(r#"(?i)\bnamed?\s+["']?([^\s"']+)["']?"#).ok()?;
+async fn try_file_search(app: &AppHandle, timers: &TimerMap, abort: &AbortFlag, msg: &str) -> Option<String> {
+    let ext_re = cached_regex(r"(?i)\b(pdf|docx?|txt|xlsx?|png|jpg|jpeg|mp4|mp3|zip)\b")?;
+    let name_re = cached_regex(r#"(?i)\bnamed?\s+["']?([^\s"']+)["']?"#)?;
     let ext_match = ext_re.captures(msg);
     let name_match = name_re.captures(msg);
     if ext_match.is_none() && name_match.is_none() { return None; }
@@ -785,7 +786,7 @@ async fn try_file_search(app: &AppHandle, timers: &TimerMap, msg: &str) -> Optio
     };
 
     emit_tool(app, "search_files", json!({ "query": query, "directory": dir }));
-    let result = execute_tool(app, timers, "search_files", &json!({ "query": query, "directory": dir })).await;
+    let result = execute_tool(app, timers, abort, "search_files", &json!({ "query": query, "directory": dir })).await;
 
     if !result.success || result.result.contains("No files found") {
         return Some(format!("No files found matching \"{}\" in {}.", query,
@@ -810,8 +811,7 @@ async fn try_file_search(app: &AppHandle, timers: &TimerMap, msg: &str) -> Optio
             if wants_notify {
                 // Wait for notepad to open, then fire notification (Electron line 928)
                 tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                let notif_text = regex::Regex::new(r#"(?i)notification\s+saying\s+["']?([^"']+?)["']?\s*$"#)
-                    .ok()
+                let notif_text = cached_regex(r#"(?i)notification\s+saying\s+["']?([^"']+?)["']?\s*$"#)
                     .and_then(|r| r.captures(msg))
                     .map(|c| c.get(1).map_or("File opened", |m| m.as_str()).to_string())
                     .unwrap_or_else(|| "File opened".to_string());
@@ -858,10 +858,10 @@ pub async fn run_gemini_agent(
         .iter().filter(|&&x| x).count();
 
     if multi_count >= 2 || wants_ram {
-        let reply = run_sysinfo_batch(app, timers, wants_ip, wants_name, wants_win, wants_cpu, wants_ram, wants_disk, wants_uptime).await;
+        let reply = run_sysinfo_batch(app, timers, &abort, wants_ip, wants_name, wants_win, wants_cpu, wants_ram, wants_disk, wants_uptime).await;
         let final_reply = if wants_ram && multi_count == 1 {
-            regex::Regex::new(r"RAM:\s*([\d.]+)GB total,\s*([\d.]+)GB free")
-                .ok().and_then(|r| r.captures(&reply))
+            cached_regex(r"RAM:\s*([\d.]+)GB total,\s*([\d.]+)GB free")
+                .and_then(|r| r.captures(&reply))
                 .map(|c| format!("You have {} GB of RAM in total, and {} GB is free.",
                     c.get(1).map_or("?", |m| m.as_str()),
                     c.get(2).map_or("?", |m| m.as_str())))
@@ -971,7 +971,7 @@ pub async fn run_gemini_agent(
                 let tool_args = &fc["args"];
 
                 emit_tool(app, tool_name, tool_args.clone());
-                let result = execute_tool(app, timers, tool_name, tool_args).await;
+                let result = execute_tool(app, timers, &abort, tool_name, tool_args).await;
 
                 contents.push(json!({
                     "role": "model",

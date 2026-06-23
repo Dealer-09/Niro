@@ -160,6 +160,58 @@ pub fn run_command(command: &str) -> ToolResult {
     }
 }
 
+// ── run_command_abortable ──────────────────────────────────────────────────
+// Like run_command, but cancellable: if `abort` flips to true mid-execution the
+// child PowerShell process is killed instead of the agent blocking until the
+// command finishes on its own. Used for the LLM's `run_command` tool calls so
+// "Stop" actually interrupts a slow command.
+pub async fn run_command_abortable(command: &str, abort: &crate::agent::AbortFlag) -> ToolResult {
+    use std::sync::atomic::Ordering;
+
+    let encoded: String = {
+        let utf16: Vec<u16> = command.encode_utf16().collect();
+        let bytes: Vec<u8> = utf16.iter().flat_map(|c| c.to_le_bytes()).collect();
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+    };
+
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]);
+    cmd.kill_on_drop(true);
+
+    // Hide the PowerShell window (CREATE_NO_WINDOW = 0x08000000).
+    // tokio::process::Command exposes creation_flags as an inherent method on Windows.
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return ToolResult::err(format!("PowerShell failed: {e}")),
+    };
+
+    // Race the command against the abort flag. wait_with_output() drains the
+    // stdout/stderr pipes (so large output can't deadlock); if the abort branch
+    // wins, dropping its future kills the child via kill_on_drop.
+    tokio::select! {
+        out = child.wait_with_output() => match out {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !stderr.is_empty() && out.status.code() != Some(0) {
+                    ToolResult::err(stderr)
+                } else {
+                    ToolResult::ok(if stdout.is_empty() { "Done.".into() } else { stdout })
+                }
+            }
+            Err(e) => ToolResult::err(format!("PowerShell failed: {e}")),
+        },
+        _ = async {
+            while !abort.load(Ordering::Relaxed) {
+                sleep(Duration::from_millis(100)).await;
+            }
+        } => ToolResult::err("Command aborted by user."),
+    }
+}
+
 // ── open_app ───────────────────────────────────────────────────────────────
 // Matches Electron APP_PATHS table exactly: APPDATA-aware paths for Spotify,
 // Discord (with special --processStart args), VS Code, Slack, Teams.
@@ -271,6 +323,10 @@ pub fn set_timer(
     let id = Uuid::new_v4().to_string();
     let label_clone = label.clone();
     let display_clone = display.clone();
+    // Clones for the timer task's self-cleanup (prevents the JoinHandle from
+    // leaking in the registry after the timer fires).
+    let timers_for_cleanup = timers.clone();
+    let id_for_cleanup = id.clone();
 
     let handle = tokio::spawn(async move {
         sleep(Duration::from_millis(ms)).await;
@@ -284,6 +340,9 @@ pub fn set_timer(
         {
             eprintln!("[Niro] Timer notification failed: {e}");
         }
+        // Self-cleanup: remove our own handle from the registry so the map
+        // doesn't grow unbounded over a long session.
+        timers_for_cleanup.lock().remove(&id_for_cleanup);
     });
 
     timers.lock().insert(id, handle);
@@ -522,13 +581,13 @@ pub fn close_app(name: &str) -> ToolResult {
 fn parse_schedule_duration(time_str: &str) -> Option<std::time::Duration> {
     use chrono::{Local, NaiveTime, Timelike};
     // Accepts "6:05 PM", "18:05", "6:05pm", "6:05PM"
+    // Compiled once, not on every schedule request.
+    static AMPM_RE: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"(?i)(\d)(am|pm)").unwrap());
     let s = time_str.trim();
     let upper = s.to_uppercase();
     // Insert space before AM/PM if missing — "6:05PM" → "6:05 PM"
-    let normalized = regex::Regex::new(r"(?i)(\d)(am|pm)")
-        .ok()
-        .map(|re| re.replace(&upper, "$1 $2").into_owned())
-        .unwrap_or_else(|| upper.clone());
+    let normalized = AMPM_RE.replace(&upper, "$1 $2").into_owned();
     let fmt_12 = "%I:%M %p";
     let fmt_24 = "%H:%M";
     let target = NaiveTime::parse_from_str(&normalized, fmt_12)
@@ -554,41 +613,74 @@ pub async fn send_email(
     schedule_time: Option<&str>,
 ) -> ToolResult {
 
-    // Schedule: wait until the specified wall-clock time
+    // Schedule: persist to the queue (so it survives a restart) then arm a timer.
     if let Some(t) = schedule_time.filter(|s| !s.is_empty()) {
         match parse_schedule_duration(t) {
             Some(wait) if wait.as_secs() > 0 => {
                 let mins = wait.as_secs() / 60;
                 let secs = wait.as_secs() % 60;
                 let eta = if mins > 0 { format!("{mins}m {secs}s") } else { format!("{secs}s") };
-                let to = to.to_string(); let subject = subject.to_string();
-                let body = body.to_string();
-                let gmail_user = gmail_user.to_string();
-                let gmail_pass = gmail_pass.to_string();
-                let t_str = t.to_string();
-                let app_clone = app.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(wait).await;
-                    let result = send_email_now(&to, &subject, &body, &gmail_user, &gmail_pass).await;
-                    // Notify user when scheduled email fires — matches Electron behavior
-                    let notif_body = if result.success {
-                        format!("Scheduled email to {} has been sent.", to)
-                    } else {
-                        format!("Scheduled email failed: {}", result.result)
-                    };
-                    let _ = app_clone.notification()
-                        .builder()
-                        .title("📧 Email Sent!")
-                        .body(&notif_body)
-                        .show();
-                });
-                return ToolResult::ok(format!("Email scheduled to send in {eta} at {t_str}."));
+                let send_at = chrono::Local::now().timestamp() + wait.as_secs() as i64;
+                let email = crate::store::ScheduledEmail {
+                    id: Uuid::new_v4().to_string(),
+                    to: to.to_string(),
+                    subject: subject.to_string(),
+                    body: body.to_string(),
+                    send_at,
+                };
+                // Persist BEFORE arming, so a restart before send_at replays it.
+                let _ = crate::store::add_scheduled_email(app, &email);
+                spawn_scheduled_send(app.clone(), email, gmail_user.to_string(), gmail_pass.to_string());
+                return ToolResult::ok(format!("Email scheduled to send in {eta} at {t}."));
             }
             _ => {} // parse failed or 0s â†’ send now
         }
     }
 
     send_email_now(to, subject, body, gmail_user, gmail_pass).await
+}
+
+// Arm one scheduled email: wait until its send_at, send, then drop it from the
+// persisted queue and notify. Shared by send_email (new schedule) and the
+// startup replay (rearm_scheduled_emails). Uses tauri::async_runtime::spawn so
+// it is safe to call from the non-async setup() hook as well as the agent loop.
+fn spawn_scheduled_send(
+    app: AppHandle,
+    email: crate::store::ScheduledEmail,
+    gmail_user: String,
+    gmail_pass: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let now = chrono::Local::now().timestamp();
+        let wait = (email.send_at - now).max(0) as u64;
+        sleep(Duration::from_secs(wait)).await;
+
+        let result = send_email_now(&email.to, &email.subject, &email.body, &gmail_user, &gmail_pass).await;
+        // Drop from the queue regardless of outcome — a failed send must not
+        // silently re-fire on every future restart.
+        let _ = crate::store::remove_scheduled_email(&app, &email.id);
+
+        let notif_body = if result.success {
+            format!("Scheduled email to {} has been sent.", email.to)
+        } else {
+            format!("Scheduled email failed: {}", result.result)
+        };
+        let _ = app.notification()
+            .builder()
+            .title("📧 Email Sent!")
+            .body(&notif_body)
+            .show();
+    });
+}
+
+/// Re-arm every persisted scheduled email — call once on startup. Items whose
+/// send_at already elapsed while the app was closed fire almost immediately
+/// (the wait saturates to 0).
+pub fn rearm_scheduled_emails(app: &AppHandle) {
+    let cfg = crate::store::get_provider_config(app);
+    for email in crate::store::get_scheduled_emails(app) {
+        spawn_scheduled_send(app.clone(), email, cfg.gmail_user.clone(), cfg.gmail_pass.clone());
+    }
 }
 
 async fn send_email_now(to: &str, subject: &str, body: &str, gmail_user: &str, gmail_pass: &str) -> ToolResult {

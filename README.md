@@ -1,6 +1,6 @@
 # Niro AI Agent 🤖
 
-Niro is a high-performance, desktop-native AI companion that lives quietly at the top of your screen and assists with your daily workflow. It combines a sleek, modern panel UI with a powerful Electron-based agent that supports vision, tools, and voice commands.
+Niro is a high-performance, desktop-native AI companion that lives quietly at the top of your screen and assists with your daily workflow. It combines a sleek, modern panel UI with a powerful Tauri + Rust agent that supports vision, tools, and voice commands.
 
 ## ✨ Key Features
 

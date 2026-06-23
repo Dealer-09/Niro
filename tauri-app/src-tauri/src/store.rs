@@ -73,6 +73,17 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+// A scheduled email persisted to disk so it survives an app restart. `send_at`
+// is a unix-epoch timestamp (seconds); the queue is re-armed on startup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledEmail {
+    pub id: String,
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    pub send_at: i64,
+}
+
 // ── Default tasks (matches Electron store.defaults.tasks) ─────────────────
 fn default_tasks() -> Vec<Task> {
     vec![
@@ -252,5 +263,35 @@ pub fn append_chat_history(app: &AppHandle, role: &str, content: &str) -> Result
 pub fn clear_chat_history(app: &AppHandle) -> Result<(), String> {
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
     store.set("chatHistory", serde_json::json!([]));
+    store.save().map_err(|e| e.to_string())
+}
+
+// ── Scheduled-email queue (persisted so it survives a restart) ─────────────
+const SCHEDULED_EMAILS_KEY: &str = "scheduledEmails";
+
+pub fn get_scheduled_emails(app: &AppHandle) -> Vec<ScheduledEmail> {
+    let store = match app.store(STORE_FILE) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    store
+        .get(SCHEDULED_EMAILS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+pub fn add_scheduled_email(app: &AppHandle, email: &ScheduledEmail) -> Result<(), String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut list = get_scheduled_emails(app);
+    list.push(email.clone());
+    store.set(SCHEDULED_EMAILS_KEY, serde_json::to_value(&list).unwrap());
+    store.save().map_err(|e| e.to_string())
+}
+
+pub fn remove_scheduled_email(app: &AppHandle, id: &str) -> Result<(), String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut list = get_scheduled_emails(app);
+    list.retain(|e| e.id != id);
+    store.set(SCHEDULED_EMAILS_KEY, serde_json::to_value(&list).unwrap());
     store.save().map_err(|e| e.to_string())
 }

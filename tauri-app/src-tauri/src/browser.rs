@@ -5,9 +5,37 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as AsyncMutex;
 use crate::tools::ToolResult;
 
 const CDP_PORT: u16 = 9222;
+
+// ── Persistent CDP connection ───────────────────────────────────────────────
+// Previously every browser tool call opened a fresh WebSocket (TCP + HTTP
+// upgrade) for a single command, then dropped it — N handshakes for an N-step
+// automation. We now cache one live connection and reuse it, reconnecting only
+// when the socket breaks (tab closed, browser relaunched, etc.). Browser tools
+// run sequentially (parallel_tool_calls = false), so a single mutex-guarded
+// connection is sufficient and never interleaves commands.
+type CdpStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+struct CdpConn {
+    ws: CdpStream,
+    next_id: u64,
+}
+
+static CDP_CONN: Lazy<AsyncMutex<Option<CdpConn>>> = Lazy::new(|| AsyncMutex::new(None));
+
+// Shared HTTP client for the CDP /json discovery endpoint — reqwest::Client is
+// a connection pool meant to be reused, not recreated per call.
+static HTTP: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
+
+/// Drop any cached CDP socket — call when the browser is (re)launched or closed.
+async fn reset_cdp_conn() {
+    *CDP_CONN.lock().await = None;
+}
 
 // ── Browser detection ──────────────────────────────────────────────────────
 fn detect_chromium_browser() -> Option<PathBuf> {
@@ -26,6 +54,9 @@ async fn ensure_cdp() -> Result<(), String> {
     if get_page_ws_url().await.is_ok() {
         return Ok(()); // already running
     }
+
+    // Browser isn't reachable — any cached socket is stale.
+    reset_cdp_conn().await;
 
     let browser = detect_chromium_browser()
         .ok_or("No Chromium browser found. Install Brave, Chrome, or Edge.")?;
@@ -52,7 +83,7 @@ async fn ensure_cdp() -> Result<(), String> {
 // ── Get WebSocket URL for first page tab ───────────────────────────────────
 async fn get_page_ws_url() -> Result<String, String> {
     let url = format!("http://127.0.0.1:{CDP_PORT}/json");
-    let targets: Vec<Value> = reqwest::Client::new()
+    let targets: Vec<Value> = HTTP
         .get(&url)
         .timeout(Duration::from_secs(2))
         .send().await.map_err(|_| "CDP not available".to_string())?
@@ -65,30 +96,66 @@ async fn get_page_ws_url() -> Result<String, String> {
         .ok_or("No page target found".into())
 }
 
-// ── Send one CDP command, return result ────────────────────────────────────
+// ── Send one CDP command over the cached connection, return result ─────────
+enum CdpOutcome {
+    Done(Result<Value, String>),
+    Reconnect(&'static str),
+}
+
 async fn cdp(method: &str, params: Value) -> Result<Value, String> {
-    let ws_url = get_page_ws_url().await?;
-    let url = ws_url.parse::<tokio_tungstenite::tungstenite::http::Uri>()
-        .map_err(|e| e.to_string())?;
+    let mut guard = CDP_CONN.lock().await;
 
-    let (mut ws, _) = connect_async(url).await
-        .map_err(|e| format!("WS connect failed: {e}"))?;
+    // Reuse the cached connection; on any send/read failure drop it and
+    // reconnect once (covers a browser that was closed and relaunched).
+    let mut last_err = "CDP: no response";
+    for _ in 0..2 {
+        if guard.is_none() {
+            let ws_url = get_page_ws_url().await?;
+            let uri = ws_url
+                .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+                .map_err(|e| e.to_string())?;
+            let (ws, _) = connect_async(uri).await
+                .map_err(|e| format!("WS connect failed: {e}"))?;
+            *guard = Some(CdpConn { ws, next_id: 1 });
+        }
 
-    let cmd = json!({"id": 1, "method": method, "params": params}).to_string();
-    ws.send(Message::Text(cmd)).await
-        .map_err(|e| format!("WS send failed: {e}"))?;
+        // Scope the &mut borrow of the connection so we can reset `guard` after.
+        let outcome: CdpOutcome = {
+            let conn = guard.as_mut().unwrap();
+            let id = conn.next_id;
+            conn.next_id += 1;
 
-    while let Some(Ok(Message::Text(txt))) = ws.next().await {
-        let v: Value = serde_json::from_str(&txt).unwrap_or_default();
-        if v["id"].as_u64() == Some(1) {
-            return if let Some(err) = v.get("error") {
-                Err(format!("CDP error: {err}"))
+            let cmd = json!({ "id": id, "method": method, "params": params }).to_string();
+            if conn.ws.send(Message::Text(cmd)).await.is_err() {
+                CdpOutcome::Reconnect("WS send failed")
             } else {
-                Ok(v["result"].clone())
-            };
+                // Read frames until the response carrying our id arrives;
+                // unrelated events (other ids) are skipped.
+                loop {
+                    match conn.ws.next().await {
+                        Some(Ok(Message::Text(txt))) => {
+                            let v: Value = serde_json::from_str(&txt).unwrap_or_default();
+                            if v["id"].as_u64() == Some(id) {
+                                break CdpOutcome::Done(if let Some(err) = v.get("error") {
+                                    Err(format!("CDP error: {err}"))
+                                } else {
+                                    Ok(v["result"].clone())
+                                });
+                            }
+                        }
+                        Some(Ok(_)) => {} // ping/pong/binary — ignore
+                        Some(Err(_)) | None => break CdpOutcome::Reconnect("WS connection closed"),
+                    }
+                }
+            }
+        };
+
+        match outcome {
+            CdpOutcome::Done(r) => return r,
+            CdpOutcome::Reconnect(msg) => { *guard = None; last_err = msg; }
         }
     }
-    Err("CDP: no response".into())
+    Err(last_err.into())
 }
 
 // ── Execute JavaScript and return string result ────────────────────────────
@@ -193,9 +260,12 @@ pub async fn browser_read(selector: Option<&str>) -> ToolResult {
 
 pub async fn browser_close() -> ToolResult {
     if get_page_ws_url().await.is_err() {
+        reset_cdp_conn().await;
         return ToolResult::ok("No browser session active.");
     }
-    match cdp("Browser.close", json!({})).await {
-        Ok(_) | Err(_) => ToolResult::ok("Browser closed."),
-    }
+    let _ = cdp("Browser.close", json!({})).await;
+    // The socket is dead once the browser exits — drop it so the next session
+    // reconnects cleanly.
+    reset_cdp_conn().await;
+    ToolResult::ok("Browser closed.")
 }

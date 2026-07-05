@@ -1,4 +1,5 @@
 // commands.rs — All Tauri command handlers (IPC bridge between Svelte and Rust)
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -23,6 +24,9 @@ pub struct AppState {
     pub timers: TimerMap,
     pub http: reqwest::Client,
     pub hide_cancelled: Arc<AtomicBool>,  // cancellation flag for sensor hide delay
+    /// Pending action-confirmation channels: id → sender. The agent loop
+    /// inserts a channel before emitting `agent:confirm`; confirm_tool_cmd resolves it.
+    pub confirm_channels: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 }
 
 impl AppState {
@@ -32,6 +36,7 @@ impl AppState {
             timers: new_timer_map(),
             http: reqwest::Client::new(),
             hide_cancelled: Arc::new(AtomicBool::new(false)),
+            confirm_channels: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -244,4 +249,19 @@ pub fn panel_mouse_leave(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 pub fn panel_mouse_enter(state: State<'_, AppState>) {
     state.hide_cancelled.store(true, Ordering::Relaxed);
+}
+
+// ── confirm_tool_cmd — resolve a pending action-confirmation request ────────
+/// Called by Panel.svelte when the user clicks Allow or Deny on an agent:confirm card.
+#[tauri::command]
+pub fn confirm_tool_cmd(state: State<'_, AppState>, id: String, allow: bool) {
+    if let Some(tx) = state.confirm_channels.lock().remove(&id) {
+        let _ = tx.send(allow);
+    }
+}
+
+// ── reset_all_data_cmd — purge all Niro data for clean uninstall ───────────
+#[tauri::command]
+pub fn reset_all_data_cmd(app: AppHandle) -> Result<(), String> {
+    crate::store::reset_all_data(&app)
 }

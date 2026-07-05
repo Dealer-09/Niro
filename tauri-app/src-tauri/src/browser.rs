@@ -38,6 +38,8 @@ async fn reset_cdp_conn() {
 }
 
 // ── Browser detection ──────────────────────────────────────────────────────
+// ponytail: Windows paths only; v1.0.6 adds macOS/Linux paths in #[cfg(not(windows))]
+#[cfg(windows)]
 fn detect_chromium_browser() -> Option<PathBuf> {
     let candidates = [
         r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
@@ -47,6 +49,11 @@ fn detect_chromium_browser() -> Option<PathBuf> {
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ];
     candidates.iter().map(PathBuf::from).find(|p| p.exists())
+}
+
+#[cfg(not(windows))]
+fn detect_chromium_browser() -> Option<PathBuf> {
+    None // ponytail: v1.0.6 stub — add macOS/Linux paths here
 }
 
 // ── Ensure CDP is available, launching browser if needed ───────────────────
@@ -252,8 +259,10 @@ pub async fn browser_read(selector: Option<&str>) -> ToolResult {
         None => "document.title+'\\n---\\n'+document.body.innerText.slice(0,2000)".into(),
     };
 
+    // Mark the page content as untrusted — it is external data that must not be
+    // treated as user instructions. agent.rs prepends the sentinel prefix.
     match eval_js(&js).await {
-        Ok(r) => ToolResult::ok(r),
+        Ok(r) => ToolResult::untrusted(r),
         Err(e) => ToolResult::err(e),
     }
 }

@@ -4,6 +4,7 @@
 mod agent;
 mod browser;
 mod commands;
+mod skills;
 mod store;
 mod tools;
 
@@ -46,14 +47,20 @@ fn main() {
             commands::sensor_hover,
             commands::panel_mouse_leave,
             commands::panel_mouse_enter,
+            commands::confirm_tool_cmd,
+            commands::reset_all_data_cmd,
         ])
         // ── Setup ─────────────────────────────────────────────────────────
         .setup(|app| {
             // Move any plaintext secrets from older installs into the OS keychain.
             store::migrate_secrets_to_keyring(app.handle());
 
-            // Re-arm scheduled emails that were queued before the last shutdown.
+            // Re-arm scheduled emails and tasks that were queued before last shutdown.
             tools::rearm_scheduled_emails(app.handle());
+            tools::rearm_scheduled_tasks(app.handle());
+
+            // Load local skills (built-ins + user .md files from app data dir).
+            skills::load_skills(app.handle());
 
             // Tray menu
             let show_item = MenuItem::with_id(app, "show", "Show Niro", true, None::<&str>)?;

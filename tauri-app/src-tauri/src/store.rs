@@ -84,6 +84,15 @@ pub struct ScheduledEmail {
     pub send_at: i64,
 }
 
+// A general scheduled task — persisted so it survives a restart. `send_at` is
+// a unix-epoch timestamp (seconds). The task fires as a bounded agent invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTask {
+    pub id: String,
+    pub prompt: String,  // instruction replayed to the agent when it fires
+    pub run_at: i64,     // unix epoch seconds
+}
+
 // ── Default tasks (matches Electron store.defaults.tasks) ─────────────────
 fn default_tasks() -> Vec<Task> {
     vec![
@@ -293,5 +302,93 @@ pub fn remove_scheduled_email(app: &AppHandle, id: &str) -> Result<(), String> {
     let mut list = get_scheduled_emails(app);
     list.retain(|e| e.id != id);
     store.set(SCHEDULED_EMAILS_KEY, serde_json::to_value(&list).unwrap());
+    store.save().map_err(|e| e.to_string())
+}
+
+// ── Scheduled task queue ────────────────────────────────────────────────────
+const SCHEDULED_TASKS_KEY: &str = "scheduledTasks";
+
+pub fn get_scheduled_tasks(app: &AppHandle) -> Vec<ScheduledTask> {
+    let store = match app.store(STORE_FILE) { Ok(s) => s, Err(_) => return Vec::new() };
+    store.get(SCHEDULED_TASKS_KEY).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+pub fn add_scheduled_task(app: &AppHandle, task: &ScheduledTask) -> Result<(), String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut list = get_scheduled_tasks(app);
+    list.push(task.clone());
+    store.set(SCHEDULED_TASKS_KEY, serde_json::to_value(&list).unwrap());
+    store.save().map_err(|e| e.to_string())
+}
+
+pub fn remove_scheduled_task(app: &AppHandle, id: &str) -> Result<(), String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut list = get_scheduled_tasks(app);
+    list.retain(|t| t.id != id);
+    store.set(SCHEDULED_TASKS_KEY, serde_json::to_value(&list).unwrap());
+    store.save().map_err(|e| e.to_string())
+}
+
+// ── Persistent long-term memory ─────────────────────────────────────────────
+const MEMORY_KEY: &str = "memory";
+const MAX_MEMORY: usize = 50;
+
+pub fn get_memory(app: &AppHandle) -> Vec<String> {
+    let store = match app.store(STORE_FILE) { Ok(s) => s, Err(_) => return Vec::new() };
+    store.get(MEMORY_KEY).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+pub fn add_memory_fact(app: &AppHandle, fact: &str) -> Result<(), String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut facts = get_memory(app);
+    // Truncate to 200 chars; skip exact duplicates (case-insensitive)
+    let fact = fact.chars().take(200).collect::<String>();
+    if !facts.iter().any(|f| f.to_lowercase() == fact.to_lowercase()) {
+        facts.push(fact);
+    }
+    if facts.len() > MAX_MEMORY { facts.drain(0..facts.len() - MAX_MEMORY); }
+    store.set(MEMORY_KEY, serde_json::to_value(&facts).unwrap());
+    store.save().map_err(|e| e.to_string())
+}
+
+pub fn forget_fact(app: &AppHandle, query: &str) -> Result<usize, String> {
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    let mut facts = get_memory(app);
+    let before = facts.len();
+    let q = query.to_lowercase();
+    facts.retain(|f| !f.to_lowercase().contains(&q));
+    let removed = before - facts.len();
+    store.set(MEMORY_KEY, serde_json::to_value(&facts).unwrap());
+    store.save().map_err(|e| e.to_string())?;
+    Ok(removed)
+}
+
+/// Returns a formatted memory block for injection into the system prompt,
+/// or None if memory is empty.
+pub fn memory_prompt_block(app: &AppHandle) -> Option<String> {
+    let facts = get_memory(app);
+    if facts.is_empty() { return None; }
+    Some(format!(
+        "USER MEMORY (persistent context about the user — use naturally):\n{}",
+        facts.iter().map(|f| format!("• {f}")).collect::<Vec<_>>().join("\n")
+    ))
+}
+
+// ── Reset / clean uninstall ─────────────────────────────────────────────────
+/// Purge all Niro data: OS keychain entries, store keys, memory, tasks.
+/// Called from the Settings "Reset all data" action and wired to NSIS uninstaller.
+pub fn reset_all_data(app: &AppHandle) -> Result<(), String> {
+    // 1. Delete all keychain entries (best-effort — ignore individual failures)
+    for account in &["gemini_key", "gemini_extra_keys", "groq_key", "groq_extra_keys", "gmail_pass"] {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, account) {
+            let _ = entry.delete_credential();
+        }
+    }
+    // 2. Clear the store file
+    let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
+    for key in &["providerConfig", "tasks", "chatHistory",
+                 SCHEDULED_EMAILS_KEY, SCHEDULED_TASKS_KEY, MEMORY_KEY] {
+        store.delete(key);
+    }
     store.save().map_err(|e| e.to_string())
 }

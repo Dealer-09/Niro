@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 use enigo::{Enigo, Key, Keyboard, Settings as EnigoSettings};
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::time::sleep;
@@ -29,17 +29,23 @@ pub struct ToolResult {
     pub is_image: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,   // base64 PNG when is_image = Some(true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_untrusted: Option<bool>, // true for browser_read / external content
 }
 
 impl ToolResult {
     pub fn ok(result: impl Into<String>) -> Self {
-        Self { success: true, result: result.into(), is_image: None, image: None }
+        Self { success: true, result: result.into(), is_image: None, image: None, is_untrusted: None }
     }
     pub fn err(result: impl Into<String>) -> Self {
-        Self { success: false, result: result.into(), is_image: None, image: None }
+        Self { success: false, result: result.into(), is_image: None, image: None, is_untrusted: None }
     }
     pub fn image(b64: String) -> Self {
-        Self { success: true, result: String::new(), is_image: Some(true), image: Some(b64) }
+        Self { success: true, result: String::new(), is_image: Some(true), image: Some(b64), is_untrusted: None }
+    }
+    /// Mark result as coming from external/untrusted content (browser_read, file reads).
+    pub fn untrusted(result: impl Into<String>) -> Self {
+        Self { success: true, result: result.into(), is_image: None, image: None, is_untrusted: Some(true) }
     }
 }
 
@@ -53,6 +59,9 @@ impl ToolResult {
 // It is intentionally narrow — only irreversible, security-disabling, or
 // remote-code-execution patterns. Read-only queries ("what's my IP", "list
 // files"), close_app's `Stop-Process`, and recursive *searches* are unaffected.
+//
+// ponytail: PowerShell-specific patterns; v1.0.6 adds macOS/Linux shell patterns
+// behind a separate #[cfg(not(windows))] block.
 static DANGEROUS_COMMANDS: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
     let rules: &[(&str, &str)] = &[
         // Remote code execution — the classic prompt-injection → RCE chain.
@@ -127,6 +136,7 @@ pub fn screen_command(command: &str) -> Result<(), String> {
 // callers (type_text/write_to_app wrap user text in SendKeys, search/focus/close
 // build trusted commands) must not be screened, or typing the literal text
 // "shutdown /r" into Notepad would be wrongly blocked.
+#[cfg(windows)]
 pub fn run_command(command: &str) -> ToolResult {
     let encoded: String = {
         let utf16: Vec<u16> = command.encode_utf16().collect();
@@ -134,7 +144,6 @@ pub fn run_command(command: &str) -> ToolResult {
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
     };
 
-    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
 
     let mut cmd = Command::new("powershell");
@@ -142,7 +151,6 @@ pub fn run_command(command: &str) -> ToolResult {
 
     // Hide the PowerShell window — prevents terminal from flashing on screen
     // CREATE_NO_WINDOW = 0x08000000
-    #[cfg(windows)]
     cmd.creation_flags(0x08000000);
 
     match cmd.output()
@@ -160,11 +168,17 @@ pub fn run_command(command: &str) -> ToolResult {
     }
 }
 
+#[cfg(not(windows))]
+pub fn run_command(_command: &str) -> ToolResult {
+    ToolResult::err("Shell execution not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // ── run_command_abortable ──────────────────────────────────────────────────
 // Like run_command, but cancellable: if `abort` flips to true mid-execution the
 // child PowerShell process is killed instead of the agent blocking until the
 // command finishes on its own. Used for the LLM's `run_command` tool calls so
 // "Stop" actually interrupts a slow command.
+#[cfg(windows)]
 pub async fn run_command_abortable(command: &str, abort: &crate::agent::AbortFlag) -> ToolResult {
     use std::sync::atomic::Ordering;
 
@@ -179,8 +193,8 @@ pub async fn run_command_abortable(command: &str, abort: &crate::agent::AbortFla
     cmd.kill_on_drop(true);
 
     // Hide the PowerShell window (CREATE_NO_WINDOW = 0x08000000).
-    // tokio::process::Command exposes creation_flags as an inherent method on Windows.
-    #[cfg(windows)]
+    #[allow(unused_imports)]
+    use std::os::windows::process::CommandExt;
     cmd.creation_flags(0x08000000);
 
     let child = match cmd.spawn() {
@@ -188,9 +202,7 @@ pub async fn run_command_abortable(command: &str, abort: &crate::agent::AbortFla
         Err(e) => return ToolResult::err(format!("PowerShell failed: {e}")),
     };
 
-    // Race the command against the abort flag. wait_with_output() drains the
-    // stdout/stderr pipes (so large output can't deadlock); if the abort branch
-    // wins, dropping its future kills the child via kill_on_drop.
+    // Race the command against the abort flag.
     tokio::select! {
         out = child.wait_with_output() => match out {
             Ok(out) => {
@@ -212,9 +224,15 @@ pub async fn run_command_abortable(command: &str, abort: &crate::agent::AbortFla
     }
 }
 
+#[cfg(not(windows))]
+pub async fn run_command_abortable(_command: &str, _abort: &crate::agent::AbortFlag) -> ToolResult {
+    ToolResult::err("Shell execution not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // ── open_app ───────────────────────────────────────────────────────────────
 // Matches Electron APP_PATHS table exactly: APPDATA-aware paths for Spotify,
 // Discord (with special --processStart args), VS Code, Slack, Teams.
+#[cfg(windows)]
 fn spawn_detached(path: &str, args: &[&str]) -> ToolResult {
     let mut cmd = Command::new(path);
     for a in args { cmd.arg(a); }
@@ -227,6 +245,7 @@ fn spawn_detached(path: &str, args: &[&str]) -> ToolResult {
     }
 }
 
+#[cfg(windows)]
 pub fn open_app(app_name: &str) -> ToolResult {
     let lower = app_name.to_lowercase();
     let appdata  = std::env::var("APPDATA").unwrap_or_default();
@@ -273,6 +292,11 @@ pub fn open_app(app_name: &str) -> ToolResult {
             run_command(&format!("Start-Process '{safe}'"))
         }
     }
+}
+
+#[cfg(not(windows))]
+pub fn open_app(_app_name: &str) -> ToolResult {
+    ToolResult::err("open_app not supported on this platform yet.") // ponytail: v1.0.6 stub
 }
 
 
@@ -387,6 +411,7 @@ pub fn take_screenshot() -> ToolResult {
 }
 
 // â”€â”€ search_files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn search_files(query: &str, directory: Option<&str>) -> ToolResult {
     let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users".into());
     let dir = directory.unwrap_or(userprofile.as_str());
@@ -405,7 +430,13 @@ pub fn search_files(query: &str, directory: Option<&str>) -> ToolResult {
     result
 }
 
+#[cfg(not(windows))]
+pub fn search_files(_query: &str, _directory: Option<&str>) -> ToolResult {
+    ToolResult::err("File search not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // â”€â”€ type_text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn type_text(text: &str) -> ToolResult {
     let safe = text.replace('\'', "''");
     // Escape SendKeys special chars
@@ -427,7 +458,13 @@ pub fn type_text(text: &str) -> ToolResult {
     run_command(&ps)
 }
 
+#[cfg(not(windows))]
+pub fn type_text(_text: &str) -> ToolResult {
+    ToolResult::err("type_text not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // â”€â”€ write_to_notepad â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn write_to_notepad(content: &str, filename: Option<&str>) -> ToolResult {
     let safe_name = filename
         .unwrap_or("niro_note")
@@ -447,7 +484,13 @@ pub fn write_to_notepad(content: &str, filename: Option<&str>) -> ToolResult {
     }
 }
 
+#[cfg(not(windows))]
+pub fn write_to_notepad(_content: &str, _filename: Option<&str>) -> ToolResult {
+    ToolResult::err("write_to_notepad not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // â”€â”€ write_to_app â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn write_to_app(text: &str, app_title: &str, delay_ms: u64) -> ToolResult {
     // Focus window then type
     let focus_result = focus_window(app_title);
@@ -457,6 +500,11 @@ pub fn write_to_app(text: &str, app_title: &str, delay_ms: u64) -> ToolResult {
     let actual_delay = if delay_ms == 0 { 800 } else { delay_ms.min(2000) };
     std::thread::sleep(Duration::from_millis(actual_delay));
     type_text(text)
+}
+
+#[cfg(not(windows))]
+pub fn write_to_app(_text: &str, _app_title: &str, _delay_ms: u64) -> ToolResult {
+    ToolResult::err("write_to_app not supported on this platform yet.") // ponytail: v1.0.6 stub
 }
 
 // â”€â”€ press_key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -532,6 +580,7 @@ pub fn mouse_click(x: i32, y: i32) -> ToolResult {
 }
 
 // â”€â”€ list_windows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn list_windows() -> ToolResult {
     run_command(
         "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | \
@@ -540,7 +589,13 @@ pub fn list_windows() -> ToolResult {
     )
 }
 
+#[cfg(not(windows))]
+pub fn list_windows() -> ToolResult {
+    ToolResult::err("list_windows not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // â”€â”€ focus_window â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn focus_window(title: &str) -> ToolResult {
     let safe = title.replace('\'', "''");
     let cmd = format!(r#"
@@ -563,7 +618,13 @@ if ($proc) {{
     run_command(&cmd)
 }
 
+#[cfg(not(windows))]
+pub fn focus_window(_title: &str) -> ToolResult {
+    ToolResult::err("focus_window not supported on this platform yet.") // ponytail: v1.0.6 stub
+}
+
 // â”€â”€ close_app â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#[cfg(windows)]
 pub fn close_app(name: &str) -> ToolResult {
     let safe = name.replace('\'', "''");
     let cmd = format!(
@@ -575,6 +636,11 @@ pub fn close_app(name: &str) -> ToolResult {
     } else {
         result
     }
+}
+
+#[cfg(not(windows))]
+pub fn close_app(_name: &str) -> ToolResult {
+    ToolResult::err("close_app not supported on this platform yet.") // ponytail: v1.0.6 stub
 }
 
 // â”€â”€ send_email â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -792,3 +858,45 @@ mod tests {
     }
 }
 
+// ── schedule_task ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Generalised from the email scheduler. Persists a task prompt to disk and arms
+// a tokio timer. When it fires, emits a `scheduled:run` event with the prompt
+// so the frontend can replay it as a bounded agent invocation.
+pub fn schedule_task_tool(app: &AppHandle, prompt: &str, run_at: &str) -> ToolResult {
+    match parse_schedule_duration(run_at) {
+        Some(wait) if wait.as_secs() > 0 => {
+            let mins = wait.as_secs() / 60;
+            let secs = wait.as_secs() % 60;
+            let eta = if mins > 0 { format!("{mins}m {secs}s") } else { format!("{secs}s") };
+            let task = crate::store::ScheduledTask {
+                id: uuid::Uuid::new_v4().to_string(),
+                prompt: prompt.to_string(),
+                run_at: chrono::Local::now().timestamp() + wait.as_secs() as i64,
+            };
+            // Persist BEFORE arming so a crash/restart replays it.
+            let _ = crate::store::add_scheduled_task(app, &task);
+            spawn_scheduled_task(app.clone(), task);
+            ToolResult::ok(format!("Task scheduled in {eta}: \"{prompt}\""))
+        }
+        _ => ToolResult::err("Could not parse time. Use a format like '2:30 PM' or '14:30'."),
+    }
+}
+
+fn spawn_scheduled_task(app: AppHandle, task: crate::store::ScheduledTask) {
+    tauri::async_runtime::spawn(async move {
+        let now = chrono::Local::now().timestamp();
+        let wait = (task.run_at - now).max(0) as u64;
+        sleep(Duration::from_secs(wait)).await;
+        // Remove from persistent queue regardless of outcome
+        let _ = crate::store::remove_scheduled_task(&app, &task.id);
+        // Emit the prompt as a scheduled task run event; Panel.svelte handles it.
+        let _ = app.emit("scheduled:run", serde_json::json!({ "prompt": task.prompt }));
+    });
+}
+
+/// Re-arm every persisted scheduled task on startup.
+pub fn rearm_scheduled_tasks(app: &AppHandle) {
+    for task in crate::store::get_scheduled_tasks(app) {
+        spawn_scheduled_task(app.clone(), task);
+    }
+}

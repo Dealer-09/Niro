@@ -6,7 +6,7 @@
   import Settings from "./Settings.svelte";
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let messages = []; // { id, role: 'user'|'assistant'|'error'|'tool', text }
+  let messages = []; // { id, role: 'user'|'assistant'|'error'|'tool'|'confirm', text, ... }
   let chatHistory = []; // { role: 'user'|'assistant', content: string } passed to Rust
   let input = "";
   let running = false;
@@ -120,6 +120,39 @@
         tasks = payload.tasks || [];
       }),
     );
+
+    // agent:confirm — action confirmation card
+    unlisteners.push(
+      await listen("agent:confirm", ({ payload }) => {
+        currentStreamingId = null;
+        const msgId = nextMsgId();
+        messages = [...messages, {
+          id: msgId, role: "confirm",
+          confirmId: payload.id,
+          tool: payload.tool,
+          summary: payload.summary,
+          resolved: false,
+        }];
+        scrollToBottom();
+      }),
+    );
+
+    // scheduled:run — replay a scheduled prompt; waits if agent is currently busy
+    unlisteners.push(
+      await listen("scheduled:run", ({ payload }) => {
+        if (!payload?.prompt) return;
+        const tryRun = (attempts = 0) => {
+          if (!running) {
+            input = payload.prompt;
+            sendMessage();
+          } else if (attempts < 30) {
+            // retry every second for up to 30s then give up
+            setTimeout(() => tryRun(attempts + 1), 1000);
+          }
+        };
+        tryRun();
+      }),
+    );
   });
 
   onDestroy(() => {
@@ -177,6 +210,18 @@
   function runTask(instruction) {
     input = instruction;
     sendMessage();
+  }
+
+  // ── Confirm / deny agent action ───────────────────────────────────────────
+  async function resolveConfirm(msgId, confirmId, allow) {
+    // Mark resolved so buttons disappear
+    const idx = messages.findIndex(m => m.id === msgId);
+    if (idx >= 0) {
+      messages[idx].resolved = true;
+      messages[idx].allowed = allow;
+      messages = messages;
+    }
+    await invoke('confirm_tool_cmd', { id: confirmId, allow }).catch(() => {});
   }
 
   // ── Voice recording ───────────────────────────────────────────────────────
@@ -291,6 +336,24 @@
         </div>
       {:else if msg.role === "error"}
         <div class="msg msg-error fade-up">{msg.text}</div>
+      {:else if msg.role === "confirm"}
+        <div class="msg msg-confirm fade-up">
+          <div class="confirm-header">
+            <span class="confirm-icon">🔐</span>
+            <span class="confirm-tool">{msg.tool}</span>
+          </div>
+          <div class="confirm-summary">{msg.summary}</div>
+          {#if msg.resolved}
+            <div class="confirm-resolved" class:allowed={msg.allowed}>
+              {msg.allowed ? '✓ Allowed' : '✗ Denied'}
+            </div>
+          {:else}
+            <div class="confirm-actions">
+              <button class="confirm-btn allow" on:click={() => resolveConfirm(msg.id, msg.confirmId, true)}>Allow</button>
+              <button class="confirm-btn deny"  on:click={() => resolveConfirm(msg.id, msg.confirmId, false)}>Deny</button>
+            </div>
+          {/if}
+        </div>
       {/if}
     {/each}
 
@@ -592,6 +655,67 @@
     padding: 8px 12px;
     font-size: 12px;
   }
+  .msg-confirm {
+    align-self: flex-start;
+    background: rgba(245, 158, 11, 0.07);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 92%;
+  }
+  .confirm-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: #f59e0b;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .confirm-icon { font-size: 13px; }
+  .confirm-summary {
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+  }
+  .confirm-btn {
+    padding: 5px 16px;
+    border-radius: 8px;
+    border: 1px solid;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .confirm-btn.allow {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #10b981;
+  }
+  .confirm-btn.allow:hover { background: rgba(16, 185, 129, 0.22); }
+  .confirm-btn.deny {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+  }
+  .confirm-btn.deny:hover { background: rgba(239, 68, 68, 0.2); }
+  .confirm-resolved {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-faint);
+  }
+  .confirm-resolved.allowed { color: #10b981; }
   .tool-icon {
     font-size: 11px;
   }
